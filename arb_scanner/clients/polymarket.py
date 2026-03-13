@@ -1,7 +1,8 @@
 """Polymarket client — discovers esports markets via gamma API, fetches prices from CLOB."""
 
-import time
 import logging
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
 import requests
@@ -12,7 +13,6 @@ from arb_scanner.config import (
     POLYMARKET_BASE_URL,
     MAX_RETRIES,
     RETRY_BACKOFF,
-    RATE_LIMIT_DELAY,
 )
 
 logger = logging.getLogger(__name__)
@@ -25,6 +25,9 @@ ESPORT_TAGS = {
     "lol": 65,
     "cs2": 100780,
 }
+
+# Concurrent CLOB fetches — Polymarket CLOB is generous with rate limits
+CLOB_WORKERS = 15
 
 
 @dataclass
@@ -45,19 +48,19 @@ def _build_session() -> requests.Session:
         backoff_factor=RETRY_BACKOFF,
         status_forcelist=[429, 500, 502, 503, 504],
     )
-    session.mount("https://", HTTPAdapter(max_retries=retries))
+    adapter = HTTPAdapter(max_retries=retries, pool_connections=CLOB_WORKERS, pool_maxsize=CLOB_WORKERS)
+    session.mount("https://", adapter)
     return session
 
 
 def _is_match_winner_market(event_title: str, market_question: str) -> bool:
     """Check if a market is the main match-winner (not map/prop/total)."""
     q = market_question.lower()
-    # The main match winner market's question matches the event title
     if market_question == event_title:
         return True
-    # Exclude prop/map/handicap/total markets
     prop_keywords = [
-        "game 1", "game 2", "game 3", "map 1", "map 2", "map 3",
+        "game 1", "game 2", "game 3", "game 4", "game 5",
+        "map 1", "map 2", "map 3", "map 4", "map 5",
         "total", "handicap", "o/u", "odd/even",
         "kill", "dragon", "baron", "tower", "inhibitor", "rift herald",
         "first blood", "penta", "quadra", "triple",
@@ -65,22 +68,57 @@ def _is_match_winner_market(event_title: str, market_question: str) -> bool:
     return not any(kw in q for kw in prop_keywords)
 
 
+def _fetch_clob_price(session: requests.Session, gm: dict) -> PolymarketEvent | None:
+    """Fetch a single market's price from the CLOB. Used by thread pool."""
+    cid = gm["condition_id"]
+    try:
+        resp = session.get(f"{POLYMARKET_BASE_URL}/markets/{cid}", timeout=10)
+        if resp.status_code != 200:
+            return None
+
+        clob_data = resp.json()
+        tokens = clob_data.get("tokens", [])
+        if len(tokens) != 2:
+            return None
+
+        yes_price = float(tokens[0].get("price", 0))
+        no_price = float(tokens[1].get("price", 0))
+
+        if yes_price <= 0.01 or yes_price >= 0.99:
+            return None
+
+        active = clob_data.get("active", True)
+        if not active:
+            return None
+
+        return PolymarketEvent(
+            condition_id=cid,
+            question=gm["question"],
+            yes_price=yes_price,
+            no_price=no_price,
+            active=active,
+            slug=gm["slug"],
+        )
+    except requests.RequestException:
+        return None
+
+
 def fetch_markets() -> list[PolymarketEvent]:
     """Fetch active esports match-winner markets from Polymarket.
 
     Pipeline:
       1. Gamma API (/events?tag_id=...) → discover events + condition IDs
-      2. CLOB API (/markets/{conditionId}) → fetch live prices
+      2. CLOB API (/markets/{conditionId}) → fetch live prices (concurrent)
     """
     session = _build_session()
     events: list[PolymarketEvent] = []
 
     # Step 1: Discover esports events from gamma API
-    gamma_markets: list[dict] = []  # (condition_id, question, event_title, slug)
+    gamma_markets: list[dict] = []
 
     for sport, tag_id in ESPORT_TAGS.items():
         try:
-            time.sleep(RATE_LIMIT_DELAY)
+            time.sleep(0.5)
             resp = session.get(
                 f"{GAMMA_BASE}/events",
                 params={
@@ -108,7 +146,6 @@ def fetch_markets() -> list[PolymarketEvent]:
                 cid = market.get("conditionId", "")
                 if not cid:
                     continue
-                # Only keep match-winner markets
                 if _is_match_winner_market(event_title, question):
                     gamma_markets.append({
                         "condition_id": cid,
@@ -120,47 +157,13 @@ def fetch_markets() -> list[PolymarketEvent]:
 
     logger.info("Discovered %d match-winner markets from gamma", len(gamma_markets))
 
-    # Step 2: Fetch live prices from CLOB for each condition ID
-    for gm in gamma_markets:
-        cid = gm["condition_id"]
-        try:
-            time.sleep(RATE_LIMIT_DELAY)
-            resp = session.get(
-                f"{POLYMARKET_BASE_URL}/markets/{cid}",
-                timeout=10,
-            )
-            if resp.status_code != 200:
-                logger.debug("CLOB returned %d for %s", resp.status_code, cid[:20])
-                continue
-
-            clob_data = resp.json()
-            tokens = clob_data.get("tokens", [])
-            if len(tokens) != 2:
-                continue
-
-            yes_price = float(tokens[0].get("price", 0))
-            no_price = float(tokens[1].get("price", 0))
-
-            # Skip settled / dead markets
-            if yes_price <= 0.01 or yes_price >= 0.99:
-                continue
-
-            active = clob_data.get("active", True)
-            if not active:
-                continue
-
-            events.append(PolymarketEvent(
-                condition_id=cid,
-                question=gm["question"],
-                yes_price=yes_price,
-                no_price=no_price,
-                active=active,
-                slug=gm["slug"],
-            ))
-
-        except requests.RequestException:
-            logger.debug("Failed to fetch CLOB price for %s", cid[:20])
-            continue
+    # Step 2: Fetch live prices from CLOB concurrently
+    with ThreadPoolExecutor(max_workers=CLOB_WORKERS) as pool:
+        futures = {pool.submit(_fetch_clob_price, session, gm): gm for gm in gamma_markets}
+        for future in as_completed(futures):
+            result = future.result()
+            if result is not None:
+                events.append(result)
 
     logger.info("Fetched %d tradeable Polymarket esports markets", len(events))
     return events
