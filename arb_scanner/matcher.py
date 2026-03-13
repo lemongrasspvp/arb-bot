@@ -22,9 +22,12 @@ class MarketOutcome:
     platform: str          # "polymarket", "pinnacle", "kalshi"
     event_name: str        # "Team A vs Team B" or full question
     team_name: str         # which team this outcome is for
-    implied_prob: float    # 0–1 probability for this team winning
+    implied_prob: float    # 0–1 probability for this team winning (no-vig for Pinnacle)
     sport: str             # "lol" or "cs2"
     raw_id: str            # platform-specific ID (condition_id, ticker, etc.)
+    commence_time: str = ""  # ISO start time (from Pinnacle)
+    actual_price: float = 0.0  # what you'd actually pay (with vig); 0 = same as implied_prob
+    token_id: str = ""         # Polymarket token ID (for order book lookup)
 
 
 @dataclass

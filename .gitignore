@@ -2,4 +2,4 @@ __pycache__/
 *.pyc
 .env
 arb_scanner.log
-spreads.html
+pages/

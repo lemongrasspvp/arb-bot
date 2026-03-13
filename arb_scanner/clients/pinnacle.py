@@ -3,6 +3,7 @@
 import time
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone, timedelta
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -125,12 +126,30 @@ def fetch_odds() -> list[PinnacleOutcome]:
 
             # Build matchup lookup: id -> {name, startTime}
             matchup_info: dict[int, dict] = {}
+            now = datetime.now(timezone.utc)
+            cutoff = now + timedelta(minutes=5)
+
             for mu in matchups:
                 if not isinstance(mu, dict):
                     continue
                 mu_id = mu.get("id")
                 if not mu_id:
                     continue
+
+                # Skip live games
+                if mu.get("isLive"):
+                    continue
+
+                # Skip games starting within 5 minutes
+                start_str = mu.get("startTime", "")
+                if start_str:
+                    try:
+                        start_dt = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+                        if start_dt <= cutoff:
+                            continue
+                    except ValueError:
+                        pass
+
                 participants = mu.get("participants", [])
                 if len(participants) < 2:
                     continue

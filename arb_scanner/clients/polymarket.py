@@ -35,10 +35,16 @@ class PolymarketEvent:
     """A binary market from Polymarket."""
     condition_id: str
     question: str
-    yes_price: float      # 0–1 implied probability
-    no_price: float       # 0–1 implied probability
+    yes_price: float      # 0–1 implied probability (mid/last)
+    no_price: float       # 0–1 implied probability (mid/last)
     active: bool
     slug: str
+    yes_token_id: str = ""
+    no_token_id: str = ""
+    yes_ask: float = 0.0  # best ask for YES (what you'd actually pay)
+    no_ask: float = 0.0   # best ask for NO (what you'd actually pay)
+    yes_depth_dollars: float = 0.0  # $ available near best ask for YES
+    no_depth_dollars: float = 0.0   # $ available near best ask for NO
 
 
 def _build_session() -> requests.Session:
@@ -70,6 +76,80 @@ def _is_match_winner_market(market_question: str) -> bool:
     return not any(kw in q for kw in prop_keywords)
 
 
+def _get_best_ask(session: requests.Session, token_id: str) -> float:
+    """Get the best (lowest) ask price from the CLOB order book.
+
+    This is what you'd actually pay to buy 1 share.
+    Returns 0.0 if unavailable.
+    """
+    try:
+        resp = session.get(f"{POLYMARKET_BASE_URL}/book?token_id={token_id}", timeout=8)
+        if resp.status_code != 200:
+            return 0.0
+        book = resp.json()
+        asks = book.get("asks", [])
+        if not asks:
+            return 0.0
+        best = min(asks, key=lambda x: float(x.get("price", 999)))
+        return float(best["price"])
+    except (requests.RequestException, ValueError, KeyError):
+        return 0.0
+
+
+def _fetch_book_depth(session: requests.Session, token_id: str, price: float, side: str = "asks") -> float:
+    """Fetch $ depth available near the quoted price from the CLOB order book.
+
+    For buying YES at `price`, we check the asks at or below `price`.
+    Returns total $ of liquidity within 2¢ of the quoted price.
+    """
+    try:
+        resp = session.get(f"{POLYMARKET_BASE_URL}/book?token_id={token_id}", timeout=8)
+        if resp.status_code != 200:
+            return 0.0
+        book = resp.json()
+        levels = book.get(side, [])
+        total = 0.0
+        for level in levels:
+            lvl_price = float(level.get("price", 0))
+            lvl_size = float(level.get("size", 0))
+            # For asks: levels at or below our target price (we can buy at these)
+            # For bids: levels at or above our target price (we can sell at these)
+            if side == "asks" and lvl_price <= price + 0.02:
+                total += lvl_size * lvl_price  # $ cost to buy these shares
+            elif side == "bids" and lvl_price >= price - 0.02:
+                total += lvl_size * lvl_price
+        return total
+    except (requests.RequestException, ValueError):
+        return 0.0
+
+
+def _fetch_book_levels(session: requests.Session, token_id: str, side: str = "asks") -> list[tuple[float, float]]:
+    """Fetch raw order book levels as [(price, size_in_shares), ...] sorted by price.
+
+    For asks: sorted ascending (cheapest first).
+    For bids: sorted descending (best bid first).
+    """
+    try:
+        resp = session.get(f"{POLYMARKET_BASE_URL}/book?token_id={token_id}", timeout=8)
+        if resp.status_code != 200:
+            return []
+        book = resp.json()
+        levels = book.get(side, [])
+        parsed = []
+        for level in levels:
+            lvl_price = float(level.get("price", 0))
+            lvl_size = float(level.get("size", 0))
+            if lvl_price > 0 and lvl_size > 0:
+                parsed.append((lvl_price, lvl_size))
+        if side == "asks":
+            parsed.sort(key=lambda x: x[0])  # cheapest first
+        else:
+            parsed.sort(key=lambda x: x[0], reverse=True)  # best bid first
+        return parsed
+    except (requests.RequestException, ValueError):
+        return []
+
+
 def _fetch_clob_price(session: requests.Session, gm: dict) -> PolymarketEvent | None:
     """Fetch a single market's price from the CLOB. Used by thread pool."""
     cid = gm["condition_id"]
@@ -93,6 +173,13 @@ def _fetch_clob_price(session: requests.Session, gm: dict) -> PolymarketEvent | 
         if not active:
             return None
 
+        yes_token_id = tokens[0].get("token_id", "")
+        no_token_id = tokens[1].get("token_id", "")
+
+        # Fetch best ask (real buy price) from order books
+        yes_ask = _get_best_ask(session, yes_token_id) if yes_token_id else yes_price
+        no_ask = _get_best_ask(session, no_token_id) if no_token_id else no_price
+
         return PolymarketEvent(
             condition_id=cid,
             question=gm["question"],
@@ -100,6 +187,10 @@ def _fetch_clob_price(session: requests.Session, gm: dict) -> PolymarketEvent | 
             no_price=no_price,
             active=active,
             slug=gm["slug"],
+            yes_token_id=yes_token_id,
+            no_token_id=no_token_id,
+            yes_ask=yes_ask,
+            no_ask=no_ask,
         )
     except requests.RequestException:
         return None
