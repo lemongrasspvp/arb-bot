@@ -2,7 +2,7 @@ name: Arb Scanner
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # every 30 minutes
+    - cron: "0,30 * * * *"   # at :00 and :30 every hour
   workflow_dispatch:          # manual trigger from Actions tab
 
 permissions:
