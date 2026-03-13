@@ -53,11 +53,13 @@ def _build_session() -> requests.Session:
     return session
 
 
-def _is_match_winner_market(event_title: str, market_question: str) -> bool:
-    """Check if a market is the main match-winner (not map/prop/total)."""
+def _is_match_winner_market(market_question: str) -> bool:
+    """Check if a market is a H2H match-winner (Team A vs Team B)."""
     q = market_question.lower()
-    if market_question == event_title:
-        return True
+    # Must be a head-to-head: require "vs" in the question
+    if " vs " not in q and " vs." not in q:
+        return False
+    # Exclude per-map/per-game props
     prop_keywords = [
         "game 1", "game 2", "game 3", "game 4", "game 5",
         "map 1", "map 2", "map 3", "map 4", "map 5",
@@ -146,7 +148,7 @@ def fetch_markets() -> list[PolymarketEvent]:
                 cid = market.get("conditionId", "")
                 if not cid:
                     continue
-                if _is_match_winner_market(event_title, question):
+                if _is_match_winner_market(question):
                     gamma_markets.append({
                         "condition_id": cid,
                         "question": question or event_title,
