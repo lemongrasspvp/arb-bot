@@ -15,9 +15,14 @@ from arb_scanner.config import EDGE_THRESHOLD
 logger = logging.getLogger(__name__)
 console = Console()
 
+PAIR_COLORS = {
+    "Poly↔Pin": "cyan",
+    "Poly↔Kalshi": "magenta",
+    "Kalshi↔Pin": "yellow",
+}
+
 
 def _edge_color(opp: ArbOpportunity) -> str:
-    """Return rich color based on edge magnitude."""
     if opp.is_arb:
         return "green"
     if opp.abs_edge > EDGE_THRESHOLD * 0.5:
@@ -25,7 +30,7 @@ def _edge_color(opp: ArbOpportunity) -> str:
     return "white"
 
 
-def _truncate(text: str, max_len: int = 45) -> str:
+def _truncate(text: str, max_len: int = 40) -> str:
     if len(text) <= max_len:
         return text
     return text[: max_len - 3] + "..."
@@ -39,7 +44,7 @@ def render_dashboard(opportunities: list[ArbOpportunity]) -> None:
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     header = Text()
-    header.append("Polymarket vs Pinnacle Arb Scanner", style="bold cyan")
+    header.append("Esports Arb Scanner", style="bold cyan")
     header.append(f"  |  {now}", style="dim")
     header.append(f"  |  {len(opportunities)} pairs", style="dim")
     header.append(f"  |  ", style="dim")
@@ -56,34 +61,33 @@ def render_dashboard(opportunities: list[ArbOpportunity]) -> None:
         show_header=True,
         header_style="bold magenta",
         expand=True,
-        title_style="bold",
     )
-    table.add_column("Market", style="white", max_width=45, no_wrap=True)
-    table.add_column("Sport", style="cyan", max_width=12)
-    table.add_column("Poly YES", justify="right", style="blue")
-    table.add_column("Pin NoVig", justify="right", style="blue")
+    table.add_column("Market", style="white", max_width=40, no_wrap=True)
+    table.add_column("Pair", style="cyan", max_width=14)
+    table.add_column("Sport", style="cyan", max_width=5)
+    table.add_column("Pr. A", justify="right", style="blue")
+    table.add_column("Pr. B", justify="right", style="blue")
     table.add_column("Edge %", justify="right")
     table.add_column("Signal", justify="center")
-    table.add_column("Match %", justify="right", style="dim")
+    table.add_column("Conf", justify="right", style="dim")
 
     for opp in opportunities:
         color = _edge_color(opp)
         edge_str = f"[{color}]{opp.edge * 100:+.2f}%[/{color}]"
 
-        signal_styles = {
-            "BUY_POLY_YES": "[bold green]BUY YES[/bold green]",
-            "BUY_POLY_NO": "[bold red]BUY NO[/bold red]",
-            "NO_EDGE": "[dim]—[/dim]",
-        }
-        signal_str = signal_styles.get(opp.signal, opp.signal)
+        if opp.signal == "NO_EDGE":
+            signal_str = "[dim]—[/dim]"
+        else:
+            signal_str = f"[bold green]{opp.signal}[/bold green]"
 
-        sport_short = opp.sport.split("_")[-1].upper() if "_" in opp.sport else opp.sport.upper()
+        pair_color = PAIR_COLORS.get(opp.pair_label, "white")
 
         table.add_row(
-            _truncate(opp.poly_question),
-            sport_short,
-            f"{opp.poly_yes_price:.3f}",
-            f"{opp.pinnacle_no_vig_prob:.3f}",
+            _truncate(opp.market_name),
+            f"[{pair_color}]{opp.pair_label}[/{pair_color}]",
+            opp.sport.upper(),
+            f"{opp.price_a:.3f}",
+            f"{opp.price_b:.3f}",
             edge_str,
             signal_str,
             f"{opp.match_confidence:.0f}%",
@@ -104,21 +108,23 @@ def save_chart(opportunities: list[ArbOpportunity], output_path: str = "spreads.
         logger.info("No opportunities to chart")
         return
 
-    # Take top 25 by absolute edge for readability
     top = opportunities[:25]
 
-    labels = [_truncate(o.poly_question, 35) for o in top]
+    labels = [f"[{o.pair_label}] {_truncate(o.market_name, 30)}" for o in top]
     edges = [o.edge * 100 for o in top]
-    colors = [
-        "#00c853" if o.is_arb and o.edge > 0
-        else "#ff1744" if o.is_arb and o.edge < 0
-        else "#ffc107" if o.abs_edge > EDGE_THRESHOLD * 0.5
-        else "#90a4ae"
-        for o in top
-    ]
+
+    pair_chart_colors = {
+        "Poly↔Pin": ("#00bcd4", "#006064"),
+        "Poly↔Kalshi": ("#e040fb", "#6a1b9a"),
+        "Kalshi↔Pin": ("#ffeb3b", "#f57f17"),
+    }
+
+    colors = []
+    for o in top:
+        arb_c, normal_c = pair_chart_colors.get(o.pair_label, ("#90a4ae", "#546e7a"))
+        colors.append(arb_c if o.is_arb else normal_c)
 
     fig = go.Figure()
-
     fig.add_trace(go.Bar(
         y=labels,
         x=edges,
@@ -126,26 +132,22 @@ def save_chart(opportunities: list[ArbOpportunity], output_path: str = "spreads.
         marker_color=colors,
         text=[f"{e:+.2f}%" for e in edges],
         textposition="outside",
-        hovertemplate=(
-            "<b>%{y}</b><br>"
-            "Edge: %{x:.2f}%<br>"
-            "<extra></extra>"
-        ),
+        hovertemplate="<b>%{y}</b><br>Edge: %{x:.2f}%<extra></extra>",
     ))
 
     fig.add_vline(x=EDGE_THRESHOLD * 100, line_dash="dash", line_color="green",
-                  annotation_text=f"+{EDGE_THRESHOLD*100:.1f}% threshold")
+                  annotation_text=f"+{EDGE_THRESHOLD*100:.1f}%")
     fig.add_vline(x=-EDGE_THRESHOLD * 100, line_dash="dash", line_color="red",
-                  annotation_text=f"-{EDGE_THRESHOLD*100:.1f}% threshold")
+                  annotation_text=f"-{EDGE_THRESHOLD*100:.1f}%")
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     fig.update_layout(
-        title=f"Polymarket vs Pinnacle — Edge by Market ({now})",
-        xaxis_title="Edge % (Poly YES - Pinnacle NoVig)",
+        title=f"Esports Arb Scanner — Edge by Market ({now})",
+        xaxis_title="Edge % (Platform A - Platform B)",
         yaxis_title="",
         template="plotly_dark",
         height=max(400, len(top) * 35),
-        margin=dict(l=250),
+        margin=dict(l=300),
         yaxis=dict(autorange="reversed"),
     )
 
