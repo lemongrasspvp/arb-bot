@@ -4,6 +4,8 @@ on:
   schedule:
     - cron: "0,30 * * * *"   # at :00 and :30 every hour
   workflow_dispatch:          # manual trigger from Actions tab
+  repository_dispatch:        # external cron service trigger
+    types: [scan]
 
 permissions:
   contents: read
