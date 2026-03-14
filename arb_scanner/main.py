@@ -240,7 +240,16 @@ def run_scan() -> None:
     def _backfill_time(outcomes: list[MarketOutcome]) -> None:
         for o in outcomes:
             if not o.commence_time:
-                t = pin_times.get(_normalize_team(o.team_name), "")
+                norm = _normalize_team(o.team_name)
+                # Exact match first
+                t = pin_times.get(norm, "")
+                # Substring fallback: Pinnacle uses short names (e.g. "s2g")
+                # while exchanges use full names (e.g. "s2g esports")
+                if not t:
+                    for pin_name, pin_time in pin_times.items():
+                        if pin_name in norm or norm in pin_name:
+                            t = pin_time
+                            break
                 if t:
                     o.commence_time = t
 
