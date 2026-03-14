@@ -152,8 +152,27 @@ def _fetch_book_levels(session: requests.Session, token_id: str, side: str = "as
         return []
 
 
+def _best_ask_from_book(session: requests.Session, token_id: str) -> float:
+    """Extract best ask from the order book (single call, no separate _get_best_ask)."""
+    try:
+        resp = session.get(f"{POLYMARKET_BASE_URL}/book?token_id={token_id}", timeout=8)
+        if resp.status_code != 200:
+            return 0.0
+        asks = resp.json().get("asks", [])
+        if not asks:
+            return 0.0
+        return min(float(a.get("price", 999)) for a in asks)
+    except (requests.RequestException, ValueError, KeyError):
+        return 0.0
+
+
 def _fetch_clob_price(session: requests.Session, gm: dict) -> PolymarketEvent | None:
-    """Fetch a single market's price from the CLOB. Used by thread pool."""
+    """Fetch a single market's price from the CLOB. Used by thread pool.
+
+    Uses /markets/{cid} for mid prices + token IDs, then /book for best asks.
+    Total: 3 calls per market (market + YES book + NO book).
+    The book calls also serve as price verification — if no asks exist, market is illiquid.
+    """
     cid = gm["condition_id"]
     try:
         resp = session.get(f"{POLYMARKET_BASE_URL}/markets/{cid}", timeout=10)
@@ -178,9 +197,9 @@ def _fetch_clob_price(session: requests.Session, gm: dict) -> PolymarketEvent | 
         yes_token_id = tokens[0].get("token_id", "")
         no_token_id = tokens[1].get("token_id", "")
 
-        # Fetch best ask (real buy price) from order books
-        yes_ask = _get_best_ask(session, yes_token_id) if yes_token_id else yes_price
-        no_ask = _get_best_ask(session, no_token_id) if no_token_id else no_price
+        # Fetch best asks from order books (reuses same endpoint the depth walk uses later)
+        yes_ask = _best_ask_from_book(session, yes_token_id) if yes_token_id else yes_price
+        no_ask = _best_ask_from_book(session, no_token_id) if no_token_id else no_price
 
         return PolymarketEvent(
             condition_id=cid,

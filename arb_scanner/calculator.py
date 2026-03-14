@@ -211,5 +211,23 @@ def find_arbs(pairs: list[MatchedPair]) -> list[TrueArb]:
     # Sort by profit % descending
     arbs.sort(key=lambda a: -a.profit_pct)
 
-    logger.info("Arb analysis: %d true arbs found", len(arbs))
-    return arbs
+    # Deduplicate overlapping legs — if two arbs share a leg (same platform +
+    # team + event), only keep the more profitable one. You can't deploy capital
+    # on both since they compete for the same liquidity.
+    used_legs: set[str] = set()
+    deduped: list[TrueArb] = []
+    for arb in arbs:
+        leg_a_key = f"{arb.leg_a_platform}|{arb.leg_a_raw_id}"
+        leg_b_key = f"{arb.leg_b_platform}|{arb.leg_b_raw_id}"
+        if leg_a_key in used_legs or leg_b_key in used_legs:
+            logger.debug(
+                "Skipping overlapping arb %s (%.2f%%) — shares a leg with a better arb",
+                arb.market_name, arb.profit_pct,
+            )
+            continue
+        used_legs.add(leg_a_key)
+        used_legs.add(leg_b_key)
+        deduped.append(arb)
+
+    logger.info("Arb analysis: %d true arbs found (%d after dedup)", len(arbs), len(deduped))
+    return deduped

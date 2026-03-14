@@ -97,6 +97,11 @@ def match_platforms(
             if len(outcomes_b) < 2:
                 continue
 
+            # Sport must match (prevent LoL G2 matching CS2 G2)
+            if outcomes_a[0].sport and outcomes_b[0].sport:
+                if outcomes_a[0].sport != outcomes_b[0].sport:
+                    continue
+
             team_b1 = outcomes_b[0].team_name
             team_b2 = outcomes_b[1].team_name
             if not team_b1 or not team_b2:

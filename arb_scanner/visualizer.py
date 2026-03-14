@@ -100,11 +100,48 @@ def render_dashboard(arbs: list[TrueArb]) -> None:
     console.print()
 
 
+def _write_empty_page(now: str, output_path: str) -> None:
+    """Write a 'no arbs found' HTML page so the dashboard stays current."""
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="refresh" content="1800">
+    <title>Esports Arb Scanner</title>
+    <style>
+        body {{
+            background: #0d1117;
+            color: #e0e0e0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 0;
+            padding: 24px 32px;
+        }}
+    </style>
+</head>
+<body>
+    <div style="max-width:900px; margin:0 auto;">
+        <h1 style="color:#e0e0e0; font-size:22px; font-weight:600; margin:0 0 6px 0;">
+            Esports Arb Scanner
+        </h1>
+        <div style="font-size:13px; color:#78909c; font-family:'SF Mono',Consolas,monospace;">
+            {now} &nbsp;&middot;&nbsp; Polymarket &times; Pinnacle &times; Kalshi &nbsp;&middot;&nbsp;
+            <span style="color:#78909c;">0 ARBS</span>
+        </div>
+        <div style="margin-top:48px; text-align:center; color:#546e7a; font-size:15px;">
+            No pre-game arbs found. Waiting for next scan&hellip;
+        </div>
+    </div>
+</body>
+</html>"""
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, "w") as f:
+        f.write(html)
+    logger.info("Empty chart saved to %s", output_path)
+
+
 def save_chart(arbs: list[TrueArb], output_path: str = "pages/index.html") -> None:
     """Generate an HTML dashboard with arb cards."""
-    if not arbs:
-        logger.info("No arbs to chart")
-        return
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     # Filter: pre-game (≥5min to start) or unknown start time
     filtered = [
@@ -114,10 +151,9 @@ def save_chart(arbs: list[TrueArb], output_path: str = "pages/index.html") -> No
     ]
 
     if not filtered:
-        logger.info("No pre-game arbs to chart")
+        # Write a "no arbs" page so dashboard stays current
+        _write_empty_page(now, output_path)
         return
-
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     def _arb_card(a: TrueArb) -> str:
         h = _hours_until(a.commence_time)
