@@ -35,14 +35,22 @@ def _normalize_team(name: str) -> str:
 
 
 def _extract_teams(question: str) -> tuple[str, str] | None:
-    """Extract 'Team A' and 'Team B' from an H2H question string."""
+    """Extract 'Team/Player A' and 'Team/Player B' from an H2H question string.
+
+    Handles esports (LoL: Team A vs Team B (BO3) - Tournament),
+    UFC (Fighter A vs. Fighter B), and tennis (Player A vs Player B).
+    """
     m = re.search(
-        r"(?:LoL|CS2|Dota\s*2|Valorant)?:?\s*(.+?)\s+vs\.?\s+(.+?)(?:\s*\(.*?\))?\s*(?:-|$)",
+        r"(?:LoL|CS2|Dota\s*2|Valorant|UFC|ATP|WTA)?:?\s*(.+?)\s+vs\.?\s+(.+?)(?:\s*\(.*?\))?\s*(?:-|$)",
         question,
         re.IGNORECASE,
     )
     if m:
         return m.group(1).strip(), m.group(2).strip()
+    # Fallback: simple "A vs B" with no suffix
+    m2 = re.search(r"(.+?)\s+vs\.?\s+(.+?)$", question.strip(), re.IGNORECASE)
+    if m2:
+        return m2.group(1).strip(), m2.group(2).strip()
     return None
 
 
@@ -56,6 +64,7 @@ def _poly_to_outcomes(poly_events) -> list[MarketOutcome]:
         team_a, team_b = teams
         event_name = e.question
         slug_lower = e.slug.lower()
+        q_lower = e.question.lower()
         if "lol" in slug_lower or "league-of-legends" in slug_lower:
             sport = "lol"
         elif "dota" in slug_lower:
@@ -64,6 +73,10 @@ def _poly_to_outcomes(poly_events) -> list[MarketOutcome]:
             sport = "valorant"
         elif "call-of-duty" in slug_lower or "cod" in slug_lower:
             sport = "cod"
+        elif "ufc" in slug_lower or "ufc" in q_lower or "mma" in slug_lower:
+            sport = "ufc"
+        elif "tennis" in slug_lower or "atp" in slug_lower or "wta" in slug_lower:
+            sport = "tennis"
         else:
             sport = "cs2"
         # actual_price = ask (what you'd actually pay), not mid

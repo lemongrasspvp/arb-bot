@@ -19,13 +19,17 @@ logger = logging.getLogger(__name__)
 
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 
-# Gamma tag IDs for esports (discovered from /sports endpoint)
-# Tag 65 = LoL, Tag 100780 = CS2, Tag 102366 = Dota 2, Tag 101672 = Valorant
-ESPORT_TAGS = {
+# Gamma tag IDs (discovered from /sports and /tags endpoints)
+# Esports: Tag 65 = LoL, 100780 = CS2, 102366 = Dota 2, 101672 = Valorant
+# Combat: Tag 279 = UFC
+# Tennis: Tag 864 = Tennis (ATP + WTA)
+SPORT_TAGS = {
     "lol": 65,
     "cs2": 100780,
     "dota2": 102366,
     "valorant": 101672,
+    "ufc": 279,
+    "tennis": 864,
 }
 
 # Concurrent CLOB fetches — Polymarket CLOB is generous with rate limits
@@ -62,18 +66,22 @@ def _build_session() -> requests.Session:
 
 
 def _is_match_winner_market(market_question: str) -> bool:
-    """Check if a market is a H2H match-winner (Team A vs Team B)."""
+    """Check if a market is a H2H match/fight winner (Team/Player A vs B)."""
     q = market_question.lower()
     # Must be a head-to-head: require "vs" in the question
     if " vs " not in q and " vs." not in q:
         return False
-    # Exclude per-map/per-game props
+    # Exclude per-map/per-game/per-round props
     prop_keywords = [
         "game 1", "game 2", "game 3", "game 4", "game 5",
         "map 1", "map 2", "map 3", "map 4", "map 5",
+        "round 1", "round 2", "round 3", "round 4", "round 5",
+        "set 1", "set 2", "set 3", "set 4", "set 5",
         "total", "handicap", "o/u", "odd/even",
         "kill", "dragon", "baron", "tower", "inhibitor", "rift herald",
         "first blood", "penta", "quadra", "triple",
+        "method of victory", "goes the distance", "total rounds",
+        "total sets", "total games", "exact score",
     ]
     return not any(kw in q for kw in prop_keywords)
 
@@ -230,7 +238,7 @@ def fetch_markets() -> list[PolymarketEvent]:
     # Step 1: Discover esports events from gamma API
     gamma_markets: list[dict] = []
 
-    for sport, tag_id in ESPORT_TAGS.items():
+    for sport, tag_id in SPORT_TAGS.items():
         try:
             time.sleep(0.5)
             resp = session.get(

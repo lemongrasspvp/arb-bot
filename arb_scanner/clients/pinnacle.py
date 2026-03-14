@@ -20,9 +20,13 @@ logger = logging.getLogger(__name__)
 PINNACLE_BASE = "https://guest.api.arcadia.pinnacle.com/0.1"
 PINNACLE_API_KEY = "CmX2KcMrXuFmNg6YFbmTxE0y9CIrOi0R"
 
-# All esports live under sport ID 12; we filter leagues by name prefix
-ESPORTS_SPORT_ID = 12
-ESPORT_FILTERS = ["CS2", "League of Legends", "Dota 2", "Valorant", "Call of Duty"]
+# Sport IDs and league name filters for each sport category
+SPORT_CONFIGS = [
+    # (sport_id, league_prefix_filters)
+    (12, ["CS2", "League of Legends", "Dota 2", "Valorant", "Call of Duty"]),  # Esports
+    (22, ["UFC"]),                                                               # MMA
+    (33, ["ATP", "WTA"]),                                                        # Tennis
+]
 
 HEADERS = {
     "X-API-Key": PINNACLE_API_KEY,
@@ -77,51 +81,64 @@ def _remove_vig(probabilities: list[float]) -> list[float]:
     return [p / total for p in probabilities]
 
 
+def _league_to_sport(league_name: str) -> str:
+    """Map a Pinnacle league name to our internal sport label."""
+    ln = league_name
+    if ln.startswith("CS2"):
+        return "cs2"
+    if ln.startswith("Dota"):
+        return "dota2"
+    if ln.startswith("Valorant"):
+        return "valorant"
+    if ln.startswith("Call of Duty"):
+        return "cod"
+    if ln.startswith("League of Legends"):
+        return "lol"
+    if ln.startswith("UFC"):
+        return "ufc"
+    if ln.startswith("ATP"):
+        return "tennis"
+    if ln.startswith("WTA"):
+        return "tennis"
+    return "other"
+
+
 def fetch_odds() -> list[PinnacleOutcome]:
-    """Fetch esports odds from Pinnacle's guest API (LoL + CS2)."""
+    """Fetch odds from Pinnacle's guest API across all configured sports."""
     session = _build_session()
     outcomes: list[PinnacleOutcome] = []
 
-    # Step 1: Get all active esports leagues
-    try:
-        time.sleep(RATE_LIMIT_DELAY)
-        resp = session.get(
-            f"{PINNACLE_BASE}/sports/{ESPORTS_SPORT_ID}/leagues",
-            params={"all": "false"},
-            timeout=15,
-        )
-        if resp.status_code != 200:
-            logger.warning("Failed to fetch esports leagues (status %d)", resp.status_code)
-            return outcomes
-
-        all_leagues = resp.json()
-    except requests.RequestException:
-        logger.exception("Failed to fetch esports leagues")
-        return outcomes
-
-    # Filter to CS2 + LoL leagues only
     target_leagues: list[tuple[int, str]] = []
-    for lg in all_leagues:
-        if not isinstance(lg, dict):
-            continue
-        name = lg.get("name", "")
-        lg_id = lg.get("id")
-        if lg_id and any(name.startswith(f) for f in ESPORT_FILTERS):
-            target_leagues.append((lg_id, name))
 
-    logger.info("Pinnacle esports: %d target leagues (of %d total)", len(target_leagues), len(all_leagues))
+    for sport_id, filters in SPORT_CONFIGS:
+        try:
+            time.sleep(RATE_LIMIT_DELAY)
+            resp = session.get(
+                f"{PINNACLE_BASE}/sports/{sport_id}/leagues",
+                params={"all": "false"},
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                logger.warning("Failed to fetch leagues for sport %d (status %d)", sport_id, resp.status_code)
+                continue
+
+            all_leagues = resp.json()
+        except requests.RequestException:
+            logger.exception("Failed to fetch leagues for sport %d", sport_id)
+            continue
+
+        for lg in all_leagues:
+            if not isinstance(lg, dict):
+                continue
+            name = lg.get("name", "")
+            lg_id = lg.get("id")
+            if lg_id and any(name.startswith(f) for f in filters):
+                target_leagues.append((lg_id, name))
+
+        logger.info("Pinnacle sport %d: %d target leagues (of %d total)", sport_id, len(target_leagues), len(all_leagues))
 
     for league_id, league_name in target_leagues:
-        if league_name.startswith("CS2"):
-            sport_label = "cs2"
-        elif league_name.startswith("Dota"):
-            sport_label = "dota2"
-        elif league_name.startswith("Valorant"):
-            sport_label = "valorant"
-        elif league_name.startswith("Call of Duty"):
-            sport_label = "cod"
-        else:
-            sport_label = "lol"
+        sport_label = _league_to_sport(league_name)
         try:
             # Step 2: Get matchups for this league
             time.sleep(RATE_LIMIT_DELAY)

@@ -14,8 +14,15 @@ logger = logging.getLogger(__name__)
 
 KALSHI_BASE = "https://api.elections.kalshi.com/trade-api/v2"
 
-# Series tickers for esports match-winner markets
-ESPORT_SERIES = ["KXLOLGAME", "KXCS2GAME", "KXDOTA2GAME", "KXVALORANTGAME", "KXCODGAME"]
+# Series tickers for match-winner markets across all sports
+MATCH_SERIES = [
+    # Esports
+    "KXLOLGAME", "KXCS2GAME", "KXDOTA2GAME", "KXVALORANTGAME", "KXCODGAME",
+    # UFC/MMA
+    "KXUFCFIGHT",
+    # Tennis
+    "KXATPMATCH",
+]
 
 
 @dataclass
@@ -136,8 +143,27 @@ def _dollar_to_prob(dollar_str: str | None) -> float:
         return 0.0
 
 
+def _series_to_sport(series: str) -> str:
+    """Map a Kalshi series ticker to our internal sport label."""
+    if "LOL" in series:
+        return "lol"
+    if "CS2" in series:
+        return "cs2"
+    if "DOTA" in series:
+        return "dota2"
+    if "VALORANT" in series:
+        return "valorant"
+    if "COD" in series:
+        return "cod"
+    if "UFC" in series:
+        return "ufc"
+    if "ATP" in series:
+        return "tennis"
+    return "other"
+
+
 def fetch_markets() -> list[KalshiMarket]:
-    """Fetch active esports match-winner markets from Kalshi.
+    """Fetch active match-winner markets from Kalshi across all sports.
 
     Uses /events endpoint with series_ticker filter and nested markets
     to get prices in a single call per series.
@@ -145,19 +171,8 @@ def fetch_markets() -> list[KalshiMarket]:
     session = _build_session()
     markets: list[KalshiMarket] = []
 
-    for series in ESPORT_SERIES:
-        if "LOL" in series:
-            sport = "lol"
-        elif "CS2" in series:
-            sport = "cs2"
-        elif "DOTA" in series:
-            sport = "dota2"
-        elif "VALORANT" in series:
-            sport = "valorant"
-        elif "COD" in series:
-            sport = "cod"
-        else:
-            sport = "esports"
+    for series in MATCH_SERIES:
+        sport = _series_to_sport(series)
         cursor = None
 
         while True:
