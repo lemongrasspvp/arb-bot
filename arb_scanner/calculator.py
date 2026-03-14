@@ -48,6 +48,8 @@ class TrueArb:
     leg_a_token_id: str = ""
     leg_b_raw_id: str = ""
     leg_b_token_id: str = ""
+    leg_a_opponent_raw_id: str = ""  # Kalshi: opponent ticker for NO-via-opponent book
+    leg_b_opponent_raw_id: str = ""
     # Arb metrics
     total_cost: float = 0.0     # leg_a + leg_b (< 1.0 = arb)
     profit_pct: float = 0.0     # (1 - total_cost) / total_cost * 100
@@ -184,11 +186,13 @@ def find_arbs(pairs: list[MatchedPair]) -> list[TrueArb]:
                 leg_a_price=la_price,
                 leg_a_raw_id=leg_a.raw_id,
                 leg_a_token_id=leg_a.token_id,
+                leg_a_opponent_raw_id=getattr(leg_a, "opponent_raw_id", ""),
                 leg_b_platform=leg_b.platform,
                 leg_b_team=leg_b.team_name,
                 leg_b_price=lb_price,
                 leg_b_raw_id=leg_b.raw_id,
                 leg_b_token_id=leg_b.token_id,
+                leg_b_opponent_raw_id=getattr(leg_b, "opponent_raw_id", ""),
                 total_cost=total_cost,
                 profit_pct=profit_pct,
                 commence_time=commence,

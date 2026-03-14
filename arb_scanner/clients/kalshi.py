@@ -66,34 +66,53 @@ def _fetch_book_depth(session: requests.Session, ticker: str, yes_price: float) 
         return 0.0
 
 
-def _fetch_book_levels(session: requests.Session, ticker: str) -> list[tuple[float, float]]:
-    """Fetch YES ask levels as [(price, quantity), ...] sorted cheapest first.
+def _fetch_book_levels(
+    session: requests.Session, ticker: str, opponent_ticker: str = ""
+) -> list[tuple[float, float]]:
+    """Fetch effective ask levels to acquire YES on `ticker`.
 
-    Kalshi orderbook structure:
-      - yes_dollars: bids to BUY YES (people wanting to buy YES at this price)
-      - no_dollars:  bids to BUY NO  (people wanting to buy NO at this price)
+    Two execution paths to "buy team wins":
+      1. Buy YES directly on this ticker (= match against no_dollars inverted)
+      2. Buy NO on opponent's ticker (= match against opponent's yes_dollars inverted)
 
-    To BUY YES, you match against no_dollars inverted:
-      someone bidding to buy NO at X is selling YES at (1 - X).
-    So YES asks = [(1 - no_price, qty) for each no_dollars level], sorted ascending.
+    We merge levels from both paths into a single sorted list so the book
+    walker always finds the cheapest available liquidity.
     """
+    parsed = []
+
+    # Path 1: Buy YES directly — from this ticker's no_dollars
     try:
         resp = session.get(f"{KALSHI_BASE}/markets/{ticker}/orderbook", timeout=8)
-        if resp.status_code != 200:
-            return []
-        book = resp.json().get("orderbook_fp", resp.json().get("orderbook", {}))
-        no_levels = book.get("no_dollars", [])
-        parsed = []
-        for price_str, qty_str in no_levels:
-            no_price = float(price_str)
-            lvl_qty = float(qty_str)
-            yes_ask_price = 1.0 - no_price
-            if yes_ask_price > 0 and lvl_qty > 0:
-                parsed.append((yes_ask_price, lvl_qty))
-        parsed.sort(key=lambda x: x[0])  # cheapest YES ask first
-        return parsed
+        if resp.status_code == 200:
+            book = resp.json().get("orderbook_fp", resp.json().get("orderbook", {}))
+            for price_str, qty_str in book.get("no_dollars", []):
+                no_price = float(price_str)
+                lvl_qty = float(qty_str)
+                yes_ask = 1.0 - no_price
+                if yes_ask > 0 and lvl_qty > 0:
+                    parsed.append((yes_ask, lvl_qty))
     except (requests.RequestException, ValueError, KeyError):
-        return []
+        pass
+
+    # Path 2: Buy NO on opponent — from opponent's yes_dollars
+    if opponent_ticker:
+        try:
+            resp = session.get(
+                f"{KALSHI_BASE}/markets/{opponent_ticker}/orderbook", timeout=8
+            )
+            if resp.status_code == 200:
+                book = resp.json().get("orderbook_fp", resp.json().get("orderbook", {}))
+                for price_str, qty_str in book.get("yes_dollars", []):
+                    opp_yes_bid = float(price_str)
+                    lvl_qty = float(qty_str)
+                    no_ask = 1.0 - opp_yes_bid  # cost to buy NO on opponent
+                    if no_ask > 0 and lvl_qty > 0:
+                        parsed.append((no_ask, lvl_qty))
+        except (requests.RequestException, ValueError, KeyError):
+            pass
+
+    parsed.sort(key=lambda x: x[0])  # cheapest first
+    return parsed
 
 
 def _extract_teams(title: str) -> tuple[str, str] | None:

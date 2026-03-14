@@ -28,6 +28,7 @@ class MarketOutcome:
     commence_time: str = ""  # ISO start time (from Pinnacle)
     actual_price: float = 0.0  # what you'd actually pay (with vig); 0 = same as implied_prob
     token_id: str = ""         # Polymarket token ID (for order book lookup)
+    opponent_raw_id: str = ""  # Kalshi: opponent's ticker (for NO-via-opponent book)
 
 
 @dataclass

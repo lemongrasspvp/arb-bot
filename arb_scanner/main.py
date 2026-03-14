@@ -141,12 +141,14 @@ def _kalshi_to_outcomes(kalshi_markets) -> list[MarketOutcome]:
                 team_name=m.team_name, implied_prob=m.yes_price,
                 sport=m.sport, raw_id=m.ticker,
                 actual_price=best_price,
+                opponent_raw_id=opponent.ticker,
             ))
     return outcomes
 
 
 def _get_book_levels(platform: str, raw_id: str, token_id: str,
-                     price: float, p_sess, k_sess) -> list[tuple[float, float]]:
+                     price: float, p_sess, k_sess,
+                     opponent_raw_id: str = "") -> list[tuple[float, float]]:
     """Fetch ask book levels for a given platform/ID.
 
     For sportsbooks (Pinnacle), return a synthetic level with large size
@@ -155,7 +157,7 @@ def _get_book_levels(platform: str, raw_id: str, token_id: str,
     if platform == "polymarket" and token_id:
         return poly_book_levels(p_sess, token_id, side="asks")
     elif platform == "kalshi" and raw_id:
-        return kalshi_book_levels(k_sess, raw_id)
+        return kalshi_book_levels(k_sess, raw_id, opponent_ticker=opponent_raw_id)
     elif platform == "pinnacle" and price > 0:
         # Sportsbooks have fixed prices — treat as deep liquidity
         # Use 5000 shares as a reasonable Pinnacle limit
@@ -172,10 +174,12 @@ def _enrich_arb_depth(arbs: list) -> None:
         levels_a = _get_book_levels(
             arb.leg_a_platform, arb.leg_a_raw_id, arb.leg_a_token_id,
             arb.leg_a_price, p_sess, k_sess,
+            opponent_raw_id=arb.leg_a_opponent_raw_id,
         )
         levels_b = _get_book_levels(
             arb.leg_b_platform, arb.leg_b_raw_id, arb.leg_b_token_id,
             arb.leg_b_price, p_sess, k_sess,
+            opponent_raw_id=arb.leg_b_opponent_raw_id,
         )
 
         if not levels_a or not levels_b:
