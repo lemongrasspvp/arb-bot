@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 KALSHI_BASE = "https://api.elections.kalshi.com/trade-api/v2"
 
 # Series tickers for esports match-winner markets
-ESPORT_SERIES = ["KXLOLGAME", "KXCS2GAME"]
+ESPORT_SERIES = ["KXLOLGAME", "KXCS2GAME", "KXDOTA2GAME", "KXVALORANTGAME", "KXCODGAME"]
 
 
 @dataclass
@@ -127,7 +127,18 @@ def fetch_markets() -> list[KalshiMarket]:
     markets: list[KalshiMarket] = []
 
     for series in ESPORT_SERIES:
-        sport = "lol" if "LOL" in series else "cs2"
+        if "LOL" in series:
+            sport = "lol"
+        elif "CS2" in series:
+            sport = "cs2"
+        elif "DOTA" in series:
+            sport = "dota2"
+        elif "VALORANT" in series:
+            sport = "valorant"
+        elif "COD" in series:
+            sport = "cod"
+        else:
+            sport = "esports"
         cursor = None
 
         while True:

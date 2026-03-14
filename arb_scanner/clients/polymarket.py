@@ -20,10 +20,12 @@ logger = logging.getLogger(__name__)
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 
 # Gamma tag IDs for esports (discovered from /sports endpoint)
-# Tag 65 = LoL, Tag 100780 = CS2
+# Tag 65 = LoL, Tag 100780 = CS2, Tag 102366 = Dota 2, Tag 101672 = Valorant
 ESPORT_TAGS = {
     "lol": 65,
     "cs2": 100780,
+    "dota2": 102366,
+    "valorant": 101672,
 }
 
 # Concurrent CLOB fetches — Polymarket CLOB is generous with rate limits

@@ -22,7 +22,7 @@ PINNACLE_API_KEY = "CmX2KcMrXuFmNg6YFbmTxE0y9CIrOi0R"
 
 # All esports live under sport ID 12; we filter leagues by name prefix
 ESPORTS_SPORT_ID = 12
-ESPORT_FILTERS = ["CS2", "League of Legends"]
+ESPORT_FILTERS = ["CS2", "League of Legends", "Dota 2", "Valorant", "Call of Duty"]
 
 HEADERS = {
     "X-API-Key": PINNACLE_API_KEY,
@@ -112,7 +112,16 @@ def fetch_odds() -> list[PinnacleOutcome]:
     logger.info("Pinnacle esports: %d target leagues (of %d total)", len(target_leagues), len(all_leagues))
 
     for league_id, league_name in target_leagues:
-        sport_label = "cs2" if league_name.startswith("CS2") else "lol"
+        if league_name.startswith("CS2"):
+            sport_label = "cs2"
+        elif league_name.startswith("Dota"):
+            sport_label = "dota2"
+        elif league_name.startswith("Valorant"):
+            sport_label = "valorant"
+        elif league_name.startswith("Call of Duty"):
+            sport_label = "cod"
+        else:
+            sport_label = "lol"
         try:
             # Step 2: Get matchups for this league
             time.sleep(RATE_LIMIT_DELAY)

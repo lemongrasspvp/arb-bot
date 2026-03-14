@@ -55,7 +55,17 @@ def _poly_to_outcomes(poly_events) -> list[MarketOutcome]:
             continue
         team_a, team_b = teams
         event_name = e.question
-        sport = "lol" if "lol" in e.slug.lower() else "cs2"
+        slug_lower = e.slug.lower()
+        if "lol" in slug_lower or "league-of-legends" in slug_lower:
+            sport = "lol"
+        elif "dota" in slug_lower:
+            sport = "dota2"
+        elif "valorant" in slug_lower:
+            sport = "valorant"
+        elif "call-of-duty" in slug_lower or "cod" in slug_lower:
+            sport = "cod"
+        else:
+            sport = "cs2"
         # actual_price = ask (what you'd actually pay), not mid
         yes_ask = e.yes_ask if e.yes_ask > 0 else e.yes_price
         no_ask = e.no_ask if e.no_ask > 0 else e.no_price
@@ -172,7 +182,11 @@ def _enrich_arb_depth(arbs: list) -> None:
             logger.debug("Missing book data for arb: %s", arb.market_name)
             continue
 
-        max_deploy, vwap_cost, num_shares = walk_arb_books(levels_a, levels_b)
+        max_deploy, vwap_cost, num_shares = walk_arb_books(
+            levels_a, levels_b,
+            platform_a=arb.leg_a_platform,
+            platform_b=arb.leg_b_platform,
+        )
 
         arb.max_deploy = max_deploy
         arb.vwap_cost = vwap_cost
