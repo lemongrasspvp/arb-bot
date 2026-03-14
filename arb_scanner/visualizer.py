@@ -2,7 +2,7 @@
 
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from rich.console import Console
 from rich.table import Table
@@ -40,7 +40,7 @@ def render_dashboard(arbs: list[TrueArb]) -> None:
     """Render terminal dashboard with true arb signals."""
     console.clear()
 
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.now(timezone(timedelta(hours=1))).strftime("%Y-%m-%d %H:%M:%S CET")
 
     header = Text()
     header.append("Esports Arb Scanner", style="bold cyan")
@@ -141,7 +141,7 @@ def _write_empty_page(now: str, output_path: str) -> None:
 
 def save_chart(arbs: list[TrueArb], output_path: str = "pages/index.html") -> None:
     """Generate an HTML dashboard with arb cards."""
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.now(timezone(timedelta(hours=1))).strftime("%Y-%m-%d %H:%M:%S CET")
 
     # Filter: pre-game (≥5min to start) or unknown start time
     filtered = [
