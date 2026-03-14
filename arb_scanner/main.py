@@ -34,6 +34,18 @@ def _normalize_team(name: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", name.lower().strip())).strip()
 
 
+def _strip_event_prefix(name: str) -> str:
+    """Strip event/tournament prefixes before a colon.
+
+    '326: Renato Moicano' -> 'Renato Moicano'
+    'Fight Night: Movsar Evloev' -> 'Movsar Evloev'
+    'BNP Paribas Open: Carlos Alcaraz' -> 'Carlos Alcaraz'
+    """
+    if ":" in name:
+        return name.split(":", 1)[1].strip()
+    return name
+
+
 def _extract_teams(question: str) -> tuple[str, str] | None:
     """Extract 'Team/Player A' and 'Team/Player B' from an H2H question string.
 
@@ -46,11 +58,11 @@ def _extract_teams(question: str) -> tuple[str, str] | None:
         re.IGNORECASE,
     )
     if m:
-        return m.group(1).strip(), m.group(2).strip()
+        return _strip_event_prefix(m.group(1).strip()), _strip_event_prefix(m.group(2).strip())
     # Fallback: simple "A vs B" with no suffix
     m2 = re.search(r"(.+?)\s+vs\.?\s+(.+?)$", question.strip(), re.IGNORECASE)
     if m2:
-        return m2.group(1).strip(), m2.group(2).strip()
+        return _strip_event_prefix(m2.group(1).strip()), _strip_event_prefix(m2.group(2).strip())
     return None
 
 

@@ -43,8 +43,21 @@ class MatchedPair:
 
 
 def _normalize(text: str) -> str:
-    """Normalize text for fuzzy matching."""
+    """Normalize text for fuzzy matching.
+
+    Strips:
+      - Esports org suffixes (Esports, Gaming, Team, Club)
+      - UFC event prefixes (Fight Night:, 326:, UFC:)
+      - Tennis tournament prefixes (BNP Paribas Open:, Phoenix:, etc.)
+      - Any prefix before a colon (catches unknown tournament/event labels)
+    """
     text = text.lower().strip()
+    # Strip everything before a colon (tournament/event prefix)
+    # e.g. "Fight Night: Movsar Evloev" -> "Movsar Evloev"
+    # e.g. "BNP Paribas Open: Carlos Alcaraz" -> "Carlos Alcaraz"
+    # e.g. "326: Renato Moicano" -> "Renato Moicano"
+    if ":" in text:
+        text = text.split(":", 1)[1].strip()
     text = re.sub(r"\b(esports?|gaming|team|club|org)\b", "", text)
     text = re.sub(r"[^\w\s]", " ", text)
     text = re.sub(r"\s+", " ", text).strip()

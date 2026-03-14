@@ -17,7 +17,7 @@ POLYMARKET_BASE_URL = "https://clob.polymarket.com"
 ODDS_API_BASE_URL = "https://api.the-odds-api.com/v4"
 
 # Matching
-MATCH_CONFIDENCE_THRESHOLD = 80  # minimum rapidfuzz score to keep a match
+MATCH_CONFIDENCE_THRESHOLD = 75  # minimum rapidfuzz score (lowered for UFC/tennis name variants)
 
 # Arbitrage
 EDGE_THRESHOLD = float(os.getenv("EDGE_THRESHOLD", "0.03"))  # 3% default
