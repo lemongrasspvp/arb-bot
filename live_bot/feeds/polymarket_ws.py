@@ -105,6 +105,9 @@ def _parse_book_update(data: dict) -> list[dict]:
         best_bid, bid_top_size, bid_depth_usd = _best_price_and_size(bids, side="bid")
 
         if best_ask > 0 or best_bid > 0:
+            # Parse raw levels for VWAP computation at trade time
+            ask_levels = _parse_levels(asks)
+            bid_levels = _parse_levels(bids)
             updates.append({
                 "platform": "polymarket",
                 "market_id": asset_id,
@@ -114,6 +117,8 @@ def _parse_book_update(data: dict) -> list[dict]:
                 "bid_size": bid_top_size,        # shares at best bid
                 "ask_depth_usd": ask_depth_usd,  # total USD across all ask levels
                 "bid_depth_usd": bid_depth_usd,  # total USD across all bid levels
+                "ask_levels": ask_levels,        # [(price, size), ...] sorted best→worst
+                "bid_levels": bid_levels,        # [(price, size), ...] sorted best→worst
                 "no_vig_prob": 0.0,
                 "timestamp": time.time(),
             })
@@ -140,6 +145,26 @@ def _parse_book_update(data: dict) -> list[dict]:
         pass
 
     return updates
+
+
+def _parse_levels(levels: list) -> list[tuple[float, float]]:
+    """Parse raw order book levels into [(price, size), ...] list."""
+    parsed = []
+    for level in levels:
+        try:
+            if isinstance(level, dict):
+                p = float(level.get("price", 0))
+                s = float(level.get("size", 0))
+            elif isinstance(level, (list, tuple)) and len(level) >= 2:
+                p = float(level[0])
+                s = float(level[1])
+            else:
+                continue
+            if p > 0 and s > 0:
+                parsed.append((p, s))
+        except (ValueError, TypeError):
+            continue
+    return parsed
 
 
 def _best_price_and_size(levels: list, side: str) -> tuple[float, float, float]:

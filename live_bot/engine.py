@@ -11,6 +11,7 @@ from live_bot.config import (
     ENABLE_VALUE,
     MIN_ARB_PROFIT_PCT,
     MIN_VALUE_EDGE_PCT,
+    MIDGAME_VALUE_EDGE_PCT,
     KALSHI_FEE_RATE,
     SIMULATION_MODE,
     ALLOW_MIDGAME_VALUE,
@@ -21,6 +22,7 @@ from live_bot.config import (
     MAKER_PRICE_IMPROVEMENT,
     EARLY_EXIT_TIERS,
     EARLY_EXIT_SPREAD_COST,
+    VALUE_EDGE_PERSISTENCE,
 )
 from live_bot.registry import MarketRegistry, TrackedMatch
 from live_bot.portfolio import PaperPortfolio, Trade
@@ -36,6 +38,57 @@ logger = logging.getLogger(__name__)
 def _kalshi_fee(price: float) -> float:
     """Kalshi taker fee per contract: 0.07 * p * (1-p)."""
     return KALSHI_FEE_RATE * price * (1.0 - price)
+
+
+def _compute_vwap(ask_levels: list[tuple[float, float]], size_usd: float) -> float:
+    """Compute volume-weighted average price for a given USD size across book levels.
+
+    Walks the order book from best to worst, filling the target USD amount.
+    Returns the VWAP — the true cost per share if you buy `size_usd` worth.
+
+    If book is too thin to fill the entire size, returns the VWAP of what's available
+    plus a penalty for the unfilled portion (worst price + 1¢).
+    """
+    if not ask_levels or size_usd <= 0:
+        return 0.0
+
+    # Sort asks low→high (best first)
+    sorted_asks = sorted(ask_levels, key=lambda x: x[0])
+
+    remaining_usd = size_usd
+    total_shares = 0.0
+    total_cost = 0.0
+
+    for price, size_shares in sorted_asks:
+        if remaining_usd <= 0:
+            break
+        level_usd = price * size_shares
+        if level_usd <= remaining_usd:
+            # Take entire level
+            total_shares += size_shares
+            total_cost += level_usd
+            remaining_usd -= level_usd
+        else:
+            # Partial fill at this level
+            shares_needed = remaining_usd / price
+            total_shares += shares_needed
+            total_cost += remaining_usd
+            remaining_usd = 0.0
+
+    if total_shares <= 0:
+        return sorted_asks[0][0] if sorted_asks else 0.0
+
+    vwap = total_cost / total_shares
+
+    # If we couldn't fill the full size, the remaining would walk even deeper
+    if remaining_usd > 0 and sorted_asks:
+        worst_price = sorted_asks[-1][0] + 0.01  # 1¢ beyond deepest level
+        unfilled_shares = remaining_usd / worst_price
+        total_cost += remaining_usd
+        total_shares += unfilled_shares
+        vwap = total_cost / total_shares
+
+    return vwap
 
 
 class ArbEngine:
@@ -65,6 +118,10 @@ class ArbEngine:
         # Track recent arbs to avoid re-triggering (match_id → timestamp)
         self._recent_arbs: dict[str, float] = {}
         self._recent_values: dict[str, float] = {}
+
+        # Edge persistence: track consecutive edge sightings
+        # key = val_key → {"count": int, "first_seen": timestamp, "last_edge": float}
+        self._edge_persistence: dict[str, dict] = {}
 
     @staticmethod
     def _get_match_timing(match: TrackedMatch) -> str:
@@ -194,6 +251,11 @@ class ArbEngine:
             existing["ask_depth_usd"] = update["ask_depth_usd"]
         if update.get("bid_depth_usd", 0) > 0:
             existing["bid_depth_usd"] = update["bid_depth_usd"]
+        # Raw order book levels for VWAP computation
+        if update.get("ask_levels"):
+            existing["ask_levels"] = update["ask_levels"]
+        if update.get("bid_levels"):
+            existing["bid_levels"] = update["bid_levels"]
         if update.get("no_vig_prob", 0) > 0:
             existing["no_vig_prob"] = update["no_vig_prob"]
         existing["timestamp"] = update["timestamp"]
@@ -562,9 +624,9 @@ class ArbEngine:
             platform_b=plat_b, team_b=team_b, price_b=price_b,
             combined_cost=cost, profit_pct=profit,
             size_usd=trade.size_usd, latency_ms=latency,
-            timing=timing,
             simulated=SIMULATION_MODE, would_fill=trade.would_fill,
             filled_a=filled_a, filled_b=filled_b,
+            extra={"timing": timing},
         )
 
         # --- SHADOW: Maker order simulation ---
@@ -651,10 +713,21 @@ class ArbEngine:
             if market_ask <= 0:
                 continue
 
+            # --- VWAP-based cost calculation ---
+            # Use order book levels if available to get true executable cost
+            ask_levels = cached.get("ask_levels", [])
+            from live_bot.config import MAX_POSITION_USD
+            intended_size_usd = min(MAX_POSITION_USD, self.portfolio.current_balance / 2)
+
+            if ask_levels and intended_size_usd > 0:
+                vwap_price = _compute_vwap(ask_levels, intended_size_usd)
+                effective_price = vwap_price if vwap_price > 0 else market_ask
+            else:
+                effective_price = market_ask
+
             # Add fee for Kalshi
-            effective_price = market_ask
             if platform == "kalshi":
-                effective_price += _kalshi_fee(market_ask)
+                effective_price += _kalshi_fee(effective_price)
 
             # Countermeasure 2: Detect stale Pinnacle reference.
             # If market price diverges massively from Pinnacle (e.g., pin=60%, market=15%),
@@ -668,16 +741,62 @@ class ArbEngine:
                 )
                 continue
 
-            # Calculate edge: how underpriced is the market vs Pinnacle?
+            # Calculate edge using VWAP-inclusive effective price
             edge = (pin_prob / effective_price) - 1.0
 
-            if edge < MIN_VALUE_EDGE_PCT / 100:
+            # Dynamic edge threshold: stricter for midgame
+            min_edge = MIDGAME_VALUE_EDGE_PCT / 100 if timing == "midgame" else MIN_VALUE_EDGE_PCT / 100
+
+            if edge < min_edge:
                 continue
 
-            # Deduplicate
+            # --- Edge persistence check ---
+            # Require the edge to be seen on N consecutive checks before betting.
+            # Filters out momentary glitches and stale-reference false positives.
             val_key = f"{match.match_id}_{team_side}_{platform}"
+            now = time.time()
+            persistence = self._edge_persistence.get(val_key)
+
+            if persistence is None:
+                # First sighting — record and wait
+                self._edge_persistence[val_key] = {
+                    "count": 1,
+                    "first_seen": now,
+                    "last_edge": edge,
+                }
+                logger.debug(
+                    "Value persistence [1/%d]: %s %s edge=%.1f%%",
+                    VALUE_EDGE_PERSISTENCE, team_name, platform, edge * 100,
+                )
+                continue
+            else:
+                # Check if previous sighting was recent enough (within 90s)
+                if now - persistence["first_seen"] > 90:
+                    # Too old — reset
+                    self._edge_persistence[val_key] = {
+                        "count": 1,
+                        "first_seen": now,
+                        "last_edge": edge,
+                    }
+                    continue
+                else:
+                    persistence["count"] += 1
+                    persistence["last_edge"] = edge
+
+                if persistence["count"] < VALUE_EDGE_PERSISTENCE:
+                    logger.debug(
+                        "Value persistence [%d/%d]: %s %s edge=%.1f%%",
+                        persistence["count"], VALUE_EDGE_PERSISTENCE,
+                        team_name, platform, edge * 100,
+                    )
+                    continue
+
+            # Edge persisted! Clear persistence tracker
+            self._edge_persistence.pop(val_key, None)
+
+            # Deduplicate
             last = self._recent_values.get(val_key, 0)
-            if time.time() - last < 60:  # 60s cooldown per value opportunity
+            if now - last < 60:  # 60s cooldown per value opportunity
                 continue
 
             # Size using Kelly criterion
@@ -692,15 +811,15 @@ class ArbEngine:
                 logger.debug("Value bet blocked: %s", reason)
                 continue
 
-            self._recent_values[val_key] = time.time()
+            self._recent_values[val_key] = now
 
             # Gather depth and staleness for fill simulation
             depth_usd = cached.get("ask_depth_usd", 0) or (cached.get("ask_size", 0) * market_ask)
-            price_age = time.time() - cached.get("timestamp", time.time())
+            price_age = now - cached.get("timestamp", now)
 
-            # Execute
+            # Execute (pass effective_price which includes VWAP + fees)
             await self._execute_value(
-                match, platform, market_id, team_name, market_ask,
+                match, platform, market_id, team_name, effective_price,
                 pin_prob, edge, size, timing, depth_usd, price_age,
             )
 
@@ -790,9 +909,13 @@ class ArbEngine:
             platform_a=platform, team_a=team_name, price_a=market_price,
             edge_pct=edge * 100, pinnacle_prob=pin_prob,
             size_usd=trade.size_usd, latency_ms=latency,
-            timing=timing,
             simulated=SIMULATION_MODE, would_fill=filled,
             filled_a=filled,
+            extra={
+                "timing": timing,
+                "pinnacle_prob_at_entry": round(pin_prob, 6),
+                "effective_price_vwap": round(market_price, 6),
+            },
         )
 
         # --- SHADOW: Maker order simulation ---

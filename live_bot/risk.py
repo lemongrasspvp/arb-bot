@@ -61,6 +61,13 @@ def check_risk(portfolio, trade: ProposedTrade) -> tuple[bool, str]:
     if trade.strategy == "VALUE" and trade.market_id in portfolio.open_market_ids:
         return False, f"Already have position in {trade.market_id}"
 
+    # Event-level exposure: don't take multiple bets on the same match
+    # (e.g., Team A on Poly + Team A on Kalshi = same directional risk)
+    if trade.strategy == "VALUE":
+        open_match_ids = {p.match_id for p in portfolio.positions}
+        if trade.match_id in open_match_ids:
+            return False, f"Already have exposure to match {trade.match_id}"
+
     # Sufficient balance
     if trade.size_usd > portfolio.current_balance:
         return False, f"Insufficient balance: ${portfolio.current_balance:.2f}"

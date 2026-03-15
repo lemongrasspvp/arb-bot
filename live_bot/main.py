@@ -26,6 +26,7 @@ from live_bot.config import (
     MAX_DAILY_LOSS_USD,
     MIN_ARB_PROFIT_PCT,
     MIN_VALUE_EDGE_PCT,
+    MIDGAME_VALUE_EDGE_PCT,
     KELLY_FRACTION,
     ALLOW_MIDGAME_VALUE,
     MAX_PRICE_DIVERGENCE_PCT,
@@ -36,6 +37,7 @@ from live_bot.config import (
     MAKER_FILL_RATE,
     EARLY_EXIT_TIERS,
     DASHBOARD_PORT,
+    VALUE_EDGE_PERSISTENCE,
 )
 
 console = Console()
@@ -133,7 +135,11 @@ async def run_bot(live: bool = False) -> None:
     table.add_row("Strategy 1 (Arb)", "✅ Enabled" if ENABLE_ARB else "❌ Disabled")
     table.add_row("Strategy 2 (Value)", "✅ Enabled" if ENABLE_VALUE else "❌ Disabled")
     table.add_row("Min arb profit", f"{MIN_ARB_PROFIT_PCT}%")
-    table.add_row("Min value edge", f"{MIN_VALUE_EDGE_PCT}%")
+    table.add_row("Min value edge (pregame)", f"{MIN_VALUE_EDGE_PCT}%")
+    table.add_row("Min value edge (midgame)", f"{MIDGAME_VALUE_EDGE_PCT}%")
+    table.add_row("Edge persistence", f"{VALUE_EDGE_PERSISTENCE} checks")
+    table.add_row("Value edge calc", "VWAP + full fees")
+    table.add_row("Event exposure limit", "✅ Match-level")
     table.add_row("Max position", f"${MAX_POSITION_USD}")
     table.add_row("Daily loss limit", f"${MAX_DAILY_LOSS_USD}")
     table.add_row("Kelly fraction", f"{KELLY_FRACTION}")
