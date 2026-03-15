@@ -4,6 +4,7 @@ rapidfuzz>=3.6.0
 rich>=13.7.0
 plotly>=5.18.0
 certifi>=2024.0.0
+betfairlightweight>=2.20.0
 # Live bot dependencies
 websockets>=13.0
 py-clob-client>=0.34.0
