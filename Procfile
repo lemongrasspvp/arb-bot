@@ -1,1 +1,1 @@
-worker: python -m live_bot.main
+web: python -m live_bot.main

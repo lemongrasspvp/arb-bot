@@ -105,3 +105,6 @@ SETTLEMENT_CHECK_INTERVAL = int(os.getenv("SETTLEMENT_CHECK_INTERVAL", "60"))  #
 
 # ── Registry refresh ─────────────────────────────────────────────────
 REGISTRY_REFRESH_INTERVAL = int(os.getenv("REGISTRY_REFRESH_INTERVAL", "1800"))  # 30 min
+
+# ── Dashboard ───────────────────────────────────────────────────────
+DASHBOARD_PORT = int(os.getenv("PORT", os.getenv("DASHBOARD_PORT", "8080")))

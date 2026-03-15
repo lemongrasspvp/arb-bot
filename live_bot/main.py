@@ -35,6 +35,7 @@ from live_bot.config import (
     POLY_MAKER_REBATE,
     MAKER_FILL_RATE,
     EARLY_EXIT_TIERS,
+    DASHBOARD_PORT,
 )
 
 console = Console()
@@ -114,6 +115,7 @@ async def run_bot(live: bool = False) -> None:
     from live_bot.portfolio import PaperPortfolio
     from live_bot.settlement import settlement_loop
     from live_bot.persistence import save_positions, load_positions
+    from live_bot.dashboard import dashboard_server
 
     simulation = not live
     mode_str = "SIMULATION" if simulation else "🔴 LIVE"
@@ -210,6 +212,7 @@ async def run_bot(live: bool = False) -> None:
         loop.add_signal_handler(sig, _signal_handler)
 
     console.print("[green]Starting feeds and engine...[/green]")
+    console.print(f"[green]Dashboard: http://0.0.0.0:{DASHBOARD_PORT}[/green]")
     console.print("[dim]Press Ctrl+C to stop[/dim]\n")
 
     # Step 6: Run everything concurrently
@@ -253,6 +256,10 @@ async def run_bot(live: bool = False) -> None:
         asyncio.create_task(
             engine.early_exit_loop(shutdown_event),
             name="early_exit_checker",
+        ),
+        asyncio.create_task(
+            dashboard_server(portfolio, shutdown_event),
+            name="dashboard",
         ),
     ]
 
