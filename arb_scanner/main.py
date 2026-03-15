@@ -9,10 +9,15 @@ from concurrent.futures import ThreadPoolExecutor
 
 from rich.console import Console
 
-from arb_scanner.config import REFRESH_INTERVAL
+from arb_scanner.config import REFRESH_INTERVAL, BETFAIR_USERNAME
 from arb_scanner.clients.polymarket import fetch_markets as fetch_polymarket
 from arb_scanner.clients.pinnacle import fetch_odds as fetch_pinnacle
 from arb_scanner.clients.kalshi import fetch_markets as fetch_kalshi
+from arb_scanner.clients.betfair import (
+    fetch_markets as fetch_betfair,
+    _fetch_book_levels as bf_book_levels,
+    _build_client as bf_build_client,
+)
 from arb_scanner.matcher import MarketOutcome, match_platforms
 from arb_scanner.calculator import find_arbs, walk_arb_books
 from arb_scanner.clients.polymarket import _fetch_book_levels as poly_book_levels, _build_session as poly_session
@@ -171,9 +176,24 @@ def _kalshi_to_outcomes(kalshi_markets) -> list[MarketOutcome]:
     return outcomes
 
 
+def _betfair_to_outcomes(bf_markets) -> list[MarketOutcome]:
+    """Convert Betfair outcomes to MarketOutcome list."""
+    return [
+        MarketOutcome(
+            platform="betfair", event_name=o.event_name,
+            team_name=o.team_name, implied_prob=o.actual_price,
+            sport=o.sport, raw_id=f"{o.market_id}_{o.selection_id}",
+            actual_price=o.actual_price,
+            commence_time=o.commence_time,
+        )
+        for o in bf_markets
+    ]
+
+
 def _get_book_levels(platform: str, raw_id: str, token_id: str,
                      price: float, p_sess, k_sess,
-                     opponent_raw_id: str = "") -> list[tuple[float, float]]:
+                     opponent_raw_id: str = "",
+                     bf_client=None) -> list[tuple[float, float]]:
     """Fetch ask book levels for a given platform/ID.
 
     For sportsbooks (Pinnacle), return a synthetic level with large size
@@ -183,6 +203,16 @@ def _get_book_levels(platform: str, raw_id: str, token_id: str,
         return poly_book_levels(p_sess, token_id, side="asks")
     elif platform == "kalshi" and raw_id:
         return kalshi_book_levels(k_sess, raw_id, opponent_ticker=opponent_raw_id)
+    elif platform == "betfair" and raw_id and bf_client:
+        # Parse market_id and selection_id from raw_id ("1.234567_12345")
+        parts = raw_id.rsplit("_", 1)
+        if len(parts) == 2:
+            market_id, sel_id_str = parts
+            try:
+                return bf_book_levels(bf_client, market_id, int(sel_id_str))
+            except (ValueError, TypeError):
+                pass
+        return []
     elif platform == "pinnacle" and price > 0:
         # Sportsbooks have fixed prices — treat as deep liquidity
         # Use 5000 shares as a reasonable Pinnacle limit
@@ -194,17 +224,23 @@ def _enrich_arb_depth(arbs: list) -> None:
     """Walk both order books to find max deployable $ for each arb."""
     p_sess = poly_session()
     k_sess = kalshi_session()
+    # Only build Betfair client if any arb involves Betfair
+    bf_client = None
+    if any(a.leg_a_platform == "betfair" or a.leg_b_platform == "betfair" for a in arbs):
+        bf_client = bf_build_client()
 
     for arb in arbs:
         levels_a = _get_book_levels(
             arb.leg_a_platform, arb.leg_a_raw_id, arb.leg_a_token_id,
             arb.leg_a_price, p_sess, k_sess,
             opponent_raw_id=arb.leg_a_opponent_raw_id,
+            bf_client=bf_client,
         )
         levels_b = _get_book_levels(
             arb.leg_b_platform, arb.leg_b_raw_id, arb.leg_b_token_id,
             arb.leg_b_price, p_sess, k_sess,
             opponent_raw_id=arb.leg_b_opponent_raw_id,
+            bf_client=bf_client,
         )
 
         if not levels_a or not levels_b:
@@ -234,27 +270,38 @@ def run_scan() -> None:
     """Execute a single scan cycle — find true arbs across platforms."""
     logger.info("=== Starting scan cycle ===")
 
-    console.print("[cyan]Fetching from Polymarket, Pinnacle, Kalshi...[/cyan]")
+    has_betfair = bool(BETFAIR_USERNAME)
+    platforms = "Polymarket, Pinnacle, Kalshi"
+    if has_betfair:
+        platforms += ", Betfair"
+    console.print(f"[cyan]Fetching from {platforms}...[/cyan]")
 
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    with ThreadPoolExecutor(max_workers=4) as pool:
         f_poly = pool.submit(fetch_polymarket)
         f_pin = pool.submit(fetch_pinnacle)
         f_kalshi = pool.submit(fetch_kalshi)
+        f_bf = pool.submit(fetch_betfair) if has_betfair else None
 
     poly_raw = f_poly.result()
     pin_raw = f_pin.result()
     kalshi_raw = f_kalshi.result()
+    bf_raw = f_bf.result() if f_bf else []
 
-    console.print(
+    counts = (
         f"[dim]Polymarket: {len(poly_raw)} | "
         f"Pinnacle: {len(pin_raw)} | "
-        f"Kalshi: {len(kalshi_raw)}[/dim]"
+        f"Kalshi: {len(kalshi_raw)}"
     )
+    if has_betfair:
+        counts += f" | Betfair: {len(bf_raw)}"
+    counts += "[/dim]"
+    console.print(counts)
 
     # Convert to unified MarketOutcome format
     poly = _poly_to_outcomes(poly_raw)
     pin = _pinnacle_to_outcomes(pin_raw)
     kalshi = _kalshi_to_outcomes(kalshi_raw)
+    bf = _betfair_to_outcomes(bf_raw) if bf_raw else []
 
     # Backfill start times from Pinnacle
     pin_times: dict[str, str] = {}
@@ -280,6 +327,8 @@ def run_scan() -> None:
 
     _backfill_time(poly)
     _backfill_time(kalshi)
+    if bf:
+        _backfill_time(bf)
 
     # Match across ALL platform pairs
     console.print("[cyan]Matching across platforms...[/cyan]")
@@ -287,6 +336,10 @@ def run_scan() -> None:
     all_pairs.extend(match_platforms(poly, pin, "Poly↔Pin"))
     all_pairs.extend(match_platforms(kalshi, pin, "Kalshi↔Pin"))
     all_pairs.extend(match_platforms(poly, kalshi, "Poly↔Kalshi"))
+    if bf:
+        all_pairs.extend(match_platforms(poly, bf, "Poly↔BF"))
+        all_pairs.extend(match_platforms(kalshi, bf, "Kalshi↔BF"))
+        all_pairs.extend(match_platforms(bf, pin, "BF↔Pin"))
 
     # Backfill commence_time from matched pairs
     _event_times: dict[str, str] = {}
@@ -325,7 +378,10 @@ def main() -> None:
     args = parser.parse_args()
 
     console.print("[bold cyan]Esports Arb Scanner[/bold cyan]")
-    console.print("[dim]Polymarket × Pinnacle × Kalshi[/dim]")
+    plat_list = "Polymarket × Pinnacle × Kalshi"
+    if BETFAIR_USERNAME:
+        plat_list += " × Betfair"
+    console.print(f"[dim]{plat_list}[/dim]")
     if not args.once:
         console.print(f"[dim]Refresh interval: {REFRESH_INTERVAL}s[/dim]")
     console.print()

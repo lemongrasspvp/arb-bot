@@ -3,3 +3,8 @@ __pycache__/
 .env
 arb_scanner.log
 pages/
+*.log
+live_bot_positions.json
+live_bot_trades*.jsonl
+spreads.html
+.claude/

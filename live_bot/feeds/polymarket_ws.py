@@ -1,0 +1,188 @@
+"""Polymarket CLOB WebSocket feed — real-time orderbook updates."""
+
+import asyncio
+import json
+import logging
+import ssl
+import time
+
+import certifi
+import websockets
+
+from live_bot.config import POLYMARKET_WS_URL
+
+# Build SSL context using certifi certificates
+_ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+
+logger = logging.getLogger(__name__)
+
+# Heartbeat interval (seconds)
+PING_INTERVAL = 10
+
+
+async def polymarket_feed(
+    token_ids: list[str],
+    price_queue: asyncio.Queue,
+    shutdown_event: asyncio.Event | None = None,
+) -> None:
+    """Connect to Polymarket CLOB WebSocket and stream price updates.
+
+    Subscribes to the given token IDs and pushes PriceUpdate dicts
+    into the shared price_queue whenever best ask/bid changes.
+    """
+    if not token_ids:
+        logger.warning("No Polymarket token IDs to subscribe — feed idle")
+        return
+
+    backoff = 1
+    while not (shutdown_event and shutdown_event.is_set()):
+        try:
+            logger.info("Connecting to Polymarket WebSocket (%d tokens)...", len(token_ids))
+            async with websockets.connect(POLYMARKET_WS_URL, ping_interval=PING_INTERVAL, ssl=_ssl_ctx) as ws:
+                # Subscribe to market channel for all token IDs
+                sub_msg = json.dumps({
+                    "assets_ids": token_ids,
+                    "type": "market",
+                })
+                await ws.send(sub_msg)
+                logger.info("Polymarket WS subscribed to %d tokens", len(token_ids))
+                backoff = 1  # reset on successful connection
+
+                async for raw_msg in ws:
+                    if shutdown_event and shutdown_event.is_set():
+                        break
+
+                    try:
+                        data = json.loads(raw_msg)
+                    except json.JSONDecodeError:
+                        continue
+
+                    # Process book updates
+                    updates = _parse_book_update(data)
+                    for update in updates:
+                        await price_queue.put(update)
+
+        except (websockets.ConnectionClosed, ConnectionError, OSError) as e:
+            logger.warning("Polymarket WS disconnected: %s — reconnecting in %ds", e, backoff)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 60)
+        except asyncio.CancelledError:
+            logger.info("Polymarket feed cancelled")
+            return
+        except Exception:
+            logger.exception("Unexpected error in Polymarket feed")
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 60)
+
+
+def _parse_book_update(data: dict) -> list[dict]:
+    """Parse a Polymarket WS message into PriceUpdate dicts.
+
+    The CLOB WebSocket sends various event types. We care about:
+    - 'book' events: contain bids/asks arrays
+    - 'price_change' events: contain price/side info
+    """
+    updates = []
+    # Handle array-format messages (batch updates)
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict):
+                updates.extend(_parse_book_update(item))
+        return updates
+
+    event_type = data.get("event_type", "")
+
+    if event_type == "book":
+        # Full or delta book update
+        asset_id = data.get("asset_id", "")
+        if not asset_id:
+            return []
+
+        bids = data.get("bids", [])
+        asks = data.get("asks", [])
+
+        best_ask, ask_top_size, ask_depth_usd = _best_price_and_size(asks, side="ask")
+        best_bid, bid_top_size, bid_depth_usd = _best_price_and_size(bids, side="bid")
+
+        if best_ask > 0 or best_bid > 0:
+            updates.append({
+                "platform": "polymarket",
+                "market_id": asset_id,
+                "best_ask": best_ask,
+                "best_bid": best_bid,
+                "ask_size": ask_top_size,       # shares at best ask
+                "bid_size": bid_top_size,        # shares at best bid
+                "ask_depth_usd": ask_depth_usd,  # total USD across all ask levels
+                "bid_depth_usd": bid_depth_usd,  # total USD across all bid levels
+                "no_vig_prob": 0.0,
+                "timestamp": time.time(),
+            })
+
+    elif event_type == "price_change":
+        # Simplified price update
+        asset_id = data.get("asset_id", "")
+        price = float(data.get("price", 0))
+        side = data.get("side", "")
+
+        if asset_id and price > 0:
+            update = {
+                "platform": "polymarket",
+                "market_id": asset_id,
+                "best_ask": price if side == "sell" else 0.0,
+                "best_bid": price if side == "buy" else 0.0,
+                "no_vig_prob": 0.0,
+                "timestamp": time.time(),
+            }
+            updates.append(update)
+
+    elif event_type == "last_trade_price":
+        # Not directly useful for arb detection but can log
+        pass
+
+    return updates
+
+
+def _best_price_and_size(levels: list, side: str) -> tuple[float, float, float]:
+    """Extract best price, size at best, and total USD depth across all levels.
+
+    For asks: cheapest (lowest price)
+    For bids: most expensive (highest price)
+
+    Returns (best_price, size_at_best, total_depth_usd).
+    - size_at_best: shares available at the best price level only
+    - total_depth_usd: sum of (price × size) across ALL levels — true USD liquidity
+    """
+    if not levels:
+        return 0.0, 0.0, 0.0
+
+    try:
+        parsed = []
+        for level in levels:
+            if isinstance(level, dict):
+                p = float(level.get("price", 0))
+                s = float(level.get("size", 0))
+            elif isinstance(level, (list, tuple)) and len(level) >= 2:
+                p = float(level[0])
+                s = float(level[1])
+            elif isinstance(level, (list, tuple)) and len(level) == 1:
+                p = float(level[0])
+                s = 0.0
+            else:
+                continue
+            if p > 0:
+                parsed.append((p, s))
+
+        if not parsed:
+            return 0.0, 0.0, 0.0
+
+        if side == "ask":
+            best = min(parsed, key=lambda x: x[0])
+        else:
+            best = max(parsed, key=lambda x: x[0])
+
+        # Total USD depth across ALL levels (price × size per level)
+        total_depth_usd = sum(p * s for p, s in parsed)
+
+        return best[0], best[1], total_depth_usd
+    except (ValueError, TypeError):
+        return 0.0, 0.0, 0.0

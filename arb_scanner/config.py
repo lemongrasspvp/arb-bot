@@ -32,6 +32,12 @@ ODDS_SPORTS = [
     if s.strip()
 ]
 
+# Betfair Exchange
+BETFAIR_USERNAME = os.getenv("BETFAIR_USERNAME", "")
+BETFAIR_PASSWORD = os.getenv("BETFAIR_PASSWORD", "")
+BETFAIR_APP_KEY = os.getenv("BETFAIR_APP_KEY", "")
+BETFAIR_COMMISSION = float(os.getenv("BETFAIR_COMMISSION", "0.05"))  # 5% default
+
 # Refresh interval (seconds)
 REFRESH_INTERVAL = int(os.getenv("REFRESH_INTERVAL", "60"))
 

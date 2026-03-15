@@ -254,3 +254,144 @@ def fetch_odds() -> list[PinnacleOutcome]:
 
     logger.info("Fetched %d Pinnacle esports outcomes", len(outcomes))
     return outcomes
+
+
+def fetch_live_odds() -> list[PinnacleOutcome]:
+    """Fetch LIVE in-game odds from Pinnacle's guest API.
+
+    Same API as fetch_odds() but inverted filter: only returns matchups
+    where isLive=True. These odds update in real-time as matches progress
+    and serve as a fresh truth oracle for midgame value betting.
+    """
+    session = _build_session()
+    outcomes: list[PinnacleOutcome] = []
+
+    target_leagues: list[tuple[int, str]] = []
+
+    for sport_id, filters in SPORT_CONFIGS:
+        try:
+            time.sleep(RATE_LIMIT_DELAY)
+            resp = session.get(
+                f"{PINNACLE_BASE}/sports/{sport_id}/leagues",
+                params={"all": "false"},
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                continue
+            all_leagues = resp.json()
+        except requests.RequestException:
+            continue
+
+        for lg in all_leagues:
+            if not isinstance(lg, dict):
+                continue
+            name = lg.get("name", "")
+            lg_id = lg.get("id")
+            if lg_id and any(name.startswith(f) for f in filters):
+                target_leagues.append((lg_id, name))
+
+    for league_id, league_name in target_leagues:
+        sport_label = _league_to_sport(league_name)
+        try:
+            time.sleep(RATE_LIMIT_DELAY)
+            matchups_resp = session.get(
+                f"{PINNACLE_BASE}/leagues/{league_id}/matchups",
+                timeout=15,
+            )
+            if matchups_resp.status_code != 200:
+                continue
+            matchups = matchups_resp.json()
+
+            # Only keep LIVE matchups (opposite of fetch_odds)
+            matchup_info: dict[int, dict] = {}
+            for mu in matchups:
+                if not isinstance(mu, dict):
+                    continue
+                mu_id = mu.get("id")
+                if not mu_id:
+                    continue
+
+                # Only live games
+                if not mu.get("isLive"):
+                    continue
+
+                participants = mu.get("participants", [])
+                if len(participants) < 2:
+                    continue
+                home = next((p.get("name", "") for p in participants if p.get("alignment") == "home"), "")
+                away = next((p.get("name", "") for p in participants if p.get("alignment") == "away"), "")
+                if not home or not away:
+                    home = participants[0].get("name", "")
+                    away = participants[1].get("name", "")
+                matchup_info[mu_id] = {
+                    "name": f"{home} vs {away}",
+                    "home": home,
+                    "away": away,
+                    "start": mu.get("startTime", ""),
+                }
+
+            if not matchup_info:
+                continue
+
+            # Get straight markets (moneyline odds)
+            time.sleep(RATE_LIMIT_DELAY)
+            markets_resp = session.get(
+                f"{PINNACLE_BASE}/leagues/{league_id}/markets/straight",
+                timeout=15,
+            )
+            if markets_resp.status_code != 200:
+                continue
+            markets = markets_resp.json()
+
+            # Group moneyline prices by matchup
+            ml_by_matchup: dict[int, list[dict]] = {}
+            for mkt in markets:
+                if not isinstance(mkt, dict):
+                    continue
+                if mkt.get("type") != "moneyline":
+                    continue
+                if mkt.get("period") != 0:  # full match only
+                    continue
+                mu_id = mkt.get("matchupId")
+                if mu_id and mu_id in matchup_info:
+                    for price_obj in mkt.get("prices", []):
+                        ml_by_matchup.setdefault(mu_id, []).append(price_obj)
+
+            # Convert to outcomes
+            for mu_id, prices in ml_by_matchup.items():
+                if len(prices) < 2:
+                    continue
+
+                info = matchup_info[mu_id]
+                team_prices = []
+                for p in prices:
+                    designation = p.get("designation", "")
+                    if designation == "home":
+                        name = info["home"]
+                    elif designation == "away":
+                        name = info["away"]
+                    else:
+                        name = designation
+                    american_odds = p.get("price", 0)
+                    dec = _american_to_decimal(american_odds)
+                    team_prices.append((name, dec, _decimal_to_implied(dec)))
+
+                implied_probs = [tp[2] for tp in team_prices]
+                no_vig = _remove_vig(implied_probs)
+
+                for i, (name, dec, imp) in enumerate(team_prices):
+                    outcomes.append(PinnacleOutcome(
+                        event_name=info["name"],
+                        sport=sport_label,
+                        outcome_name=name,
+                        raw_price=dec,
+                        implied_prob=imp,
+                        no_vig_prob=no_vig[i] if i < len(no_vig) else imp,
+                        commence_time=info["start"],
+                    ))
+
+        except requests.RequestException:
+            continue
+
+    logger.info("Fetched %d Pinnacle LIVE outcomes", len(outcomes))
+    return outcomes

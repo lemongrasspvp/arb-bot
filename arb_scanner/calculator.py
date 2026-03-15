@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from arb_scanner.matcher import MatchedPair
-from arb_scanner.config import EDGE_THRESHOLD
+from arb_scanner.config import EDGE_THRESHOLD, BETFAIR_COMMISSION
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +16,16 @@ MIN_ROI_PCT = 0.75
 def _kalshi_fee(price: float) -> float:
     """Kalshi taker fee per contract: 0.07 * p * (1-p), max ~1.75¢ at 50¢."""
     return 0.07 * price * (1.0 - price)
+
+
+def _betfair_fee(price: float) -> float:
+    """Betfair exchange commission on the profit portion.
+
+    If you back at price p and win, your profit = (1-p), and Betfair takes
+    commission% of that profit. Effective extra cost per contract.
+    Example: back at 50¢, 5% commission → fee = 0.05 * 0.50 = 2.5¢
+    """
+    return BETFAIR_COMMISSION * (1.0 - price)
 
 
 def _hours_until(commence_time: str) -> float | None:
@@ -93,8 +103,8 @@ def walk_arb_books(
         price_a = levels_a[idx_a][0]
         price_b = levels_b[idx_b][0]
 
-        fee_a = _kalshi_fee(price_a) if platform_a == "kalshi" else 0.0
-        fee_b = _kalshi_fee(price_b) if platform_b == "kalshi" else 0.0
+        fee_a = _kalshi_fee(price_a) if platform_a == "kalshi" else _betfair_fee(price_a) if platform_a == "betfair" else 0.0
+        fee_b = _kalshi_fee(price_b) if platform_b == "kalshi" else _betfair_fee(price_b) if platform_b == "betfair" else 0.0
         combined = price_a + fee_a + price_b + fee_b
         if combined >= 1.0:
             break  # no more arb at these prices
@@ -150,11 +160,18 @@ def find_arbs(pairs: list[MatchedPair]) -> list[TrueArb]:
         price_opp_a = opp_a.actual_price if opp_a.actual_price > 0 else opp_a.implied_prob
         price_opp_b = opp_b.actual_price if opp_b.actual_price > 0 else opp_b.implied_prob
 
-        # Compute Kalshi fees for each leg (0 if not Kalshi)
-        fee_a = _kalshi_fee(price_a) if a.platform == "kalshi" else 0.0
-        fee_b = _kalshi_fee(price_b) if b.platform == "kalshi" else 0.0
-        fee_opp_a = _kalshi_fee(price_opp_a) if opp_a.platform == "kalshi" else 0.0
-        fee_opp_b = _kalshi_fee(price_opp_b) if opp_b.platform == "kalshi" else 0.0
+        # Compute platform fees for each leg
+        def _fee(platform: str, price: float) -> float:
+            if platform == "kalshi":
+                return _kalshi_fee(price)
+            if platform == "betfair":
+                return _betfair_fee(price)
+            return 0.0
+
+        fee_a = _fee(a.platform, price_a)
+        fee_b = _fee(b.platform, price_b)
+        fee_opp_a = _fee(opp_a.platform, price_opp_a)
+        fee_opp_b = _fee(opp_b.platform, price_opp_b)
 
         # Check both directions (include fees in cost):
         # Dir 1: Team X on Platform A + Team Y on Platform B

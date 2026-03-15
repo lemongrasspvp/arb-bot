@@ -32,6 +32,10 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run arb scanner
+        env:
+          BETFAIR_USERNAME: ${{ secrets.BETFAIR_USERNAME }}
+          BETFAIR_PASSWORD: ${{ secrets.BETFAIR_PASSWORD }}
+          BETFAIR_APP_KEY: ${{ secrets.BETFAIR_APP_KEY }}
         run: python3 -m arb_scanner.main --once
 
       - name: Upload Pages artifact

@@ -33,7 +33,7 @@ def _hours_until(commence_time: str) -> float | None:
 
 def _plat_short(platform: str) -> str:
     """Short platform name for display."""
-    return {"polymarket": "POLY", "kalshi": "KALSHI", "pinnacle": "PIN"}.get(platform, platform.upper())
+    return {"polymarket": "POLY", "kalshi": "KALSHI", "pinnacle": "PIN", "betfair": "BF"}.get(platform, platform.upper())
 
 
 def render_dashboard(arbs: list[TrueArb]) -> None:
@@ -124,7 +124,7 @@ def _write_empty_page(now: str, output_path: str) -> None:
             Esports Arb Scanner
         </h1>
         <div style="font-size:13px; color:#78909c; font-family:'SF Mono',Consolas,monospace;">
-            {now} &nbsp;&middot;&nbsp; Polymarket &times; Pinnacle &times; Kalshi &nbsp;&middot;&nbsp;
+            {now} &nbsp;&middot;&nbsp; Polymarket &times; Pinnacle &times; Kalshi &times; Betfair &nbsp;&middot;&nbsp;
             <span style="color:#78909c;">0 ARBS</span>
         </div>
         <div style="margin-top:48px; text-align:center; color:#546e7a; font-size:15px;">
@@ -236,7 +236,7 @@ def save_chart(arbs: list[TrueArb], output_path: str = "pages/index.html") -> No
                 Esports Arb Scanner
             </h1>
             <div style="font-size:13px; color:#78909c; font-family:'SF Mono',Consolas,monospace;">
-                {now} &nbsp;·&nbsp; Polymarket × Pinnacle × Kalshi &nbsp;·&nbsp;
+                {now} &nbsp;·&nbsp; Polymarket × Pinnacle × Kalshi × Betfair &nbsp;·&nbsp;
                 <span style="color:#4caf50;">{len(filtered)} ARB{'S' if len(filtered) != 1 else ''}</span>
             </div>
         </div>
