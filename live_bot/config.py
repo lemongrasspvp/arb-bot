@@ -67,7 +67,10 @@ MIN_ARB_DEPTH_USD = float(os.getenv("MIN_ARB_DEPTH_USD", "200"))
 ALLOW_MIDGAME_VALUE = os.getenv("ALLOW_MIDGAME_VALUE", "true").lower() == "true"
 # Max divergence between Pinnacle ref and market price (percentage points).
 # If |pin_prob - market_price| > this, the Pinnacle reference is likely stale → skip.
-MAX_PRICE_DIVERGENCE_PCT = float(os.getenv("MAX_PRICE_DIVERGENCE_PCT", "15"))
+# Tightened from 15 → 10: a 14pp gap (e.g. pin=43% vs market=28¢) is almost always stale
+MAX_PRICE_DIVERGENCE_PCT = float(os.getenv("MAX_PRICE_DIVERGENCE_PCT", "10"))
+# Max believable edge — anything above this is almost certainly stale/mismatched data
+MAX_VALUE_EDGE_PCT = float(os.getenv("MAX_VALUE_EDGE_PCT", "20"))
 
 # ── Maker order simulation ────────────────────────────────────────────
 # Polymarket maker rebate: ~0.5% of notional (you get paid instead of paying)

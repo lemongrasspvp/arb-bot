@@ -23,6 +23,7 @@ from live_bot.config import (
     EARLY_EXIT_TIERS,
     EARLY_EXIT_SPREAD_COST,
     VALUE_EDGE_PERSISTENCE,
+    MAX_VALUE_EDGE_PCT,
 )
 from live_bot.registry import MarketRegistry, TrackedMatch
 from live_bot.portfolio import PaperPortfolio, Trade
@@ -750,6 +751,14 @@ class ArbEngine:
             if edge < min_edge:
                 continue
 
+            # Sanity cap: edges above 20% are almost certainly stale refs or bad matches
+            if edge > MAX_VALUE_EDGE_PCT / 100:
+                logger.debug(
+                    "Value skip (edge too high = likely stale): %s %s edge=%.1f%% > %.0f%% cap",
+                    team_name, platform, edge * 100, MAX_VALUE_EDGE_PCT,
+                )
+                continue
+
             # --- Edge persistence check ---
             # Require the edge to be seen on N consecutive checks before betting.
             # Filters out momentary glitches and stale-reference false positives.
@@ -796,7 +805,7 @@ class ArbEngine:
 
             # Deduplicate
             last = self._recent_values.get(val_key, 0)
-            if now - last < 60:  # 60s cooldown per value opportunity
+            if now - last < 300:  # 5 min cooldown per value opportunity
                 continue
 
             # Size using Kelly criterion
