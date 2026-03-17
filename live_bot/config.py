@@ -13,7 +13,7 @@ load_dotenv()
 SIMULATION_MODE = os.getenv("LIVE_BOT_SIMULATION", "true").lower() == "true"
 
 # ── Strategy toggles ─────────────────────────────────────────────────
-ENABLE_ARB = os.getenv("ENABLE_ARB", "true").lower() == "true"
+ENABLE_ARB = os.getenv("ENABLE_ARB", "false").lower() == "true"
 ENABLE_VALUE = os.getenv("ENABLE_VALUE", "true").lower() == "true"
 
 # ── Polymarket credentials ───────────────────────────────────────────
