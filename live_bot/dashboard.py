@@ -67,8 +67,12 @@ def _render_html(portfolio) -> str:
 
     # Read recent trades from JSONL
     trades = _read_recent_trades(200)
-    # Filter to actual trades (not events)
-    trade_entries = [t for t in trades if t.get("strategy") in ("ARB", "VALUE")]
+    # Filter to actual trades (not events or settlements)
+    trade_entries = [
+        t for t in trades
+        if t.get("strategy") in ("ARB", "VALUE")
+        and t.get("type") not in ("SETTLEMENT", "ENGINE_START", "SETTLEMENT_START", "SETTLEMENT_BATCH")
+    ]
     settlement_entries = [t for t in trades if t.get("type") == "SETTLEMENT"]
 
     # Build P&L chart data from settlements
