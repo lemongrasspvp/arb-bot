@@ -34,8 +34,8 @@ MIN_ARB_PROFIT_PCT = float(os.getenv("MIN_ARB_PROFIT_PCT", "1.5"))
 MIN_VALUE_EDGE_PCT = float(os.getenv("MIN_VALUE_EDGE_PCT", "3.0"))
 # Midgame (live) value bets require a larger edge buffer due to stale refs + execution delay
 MIDGAME_VALUE_EDGE_PCT = float(os.getenv("MIDGAME_VALUE_EDGE_PCT", "8.0"))
-PINNACLE_POLL_INTERVAL = int(os.getenv("PINNACLE_POLL_INTERVAL", "30"))
-PINNACLE_LIVE_POLL_INTERVAL = int(os.getenv("PINNACLE_LIVE_POLL_INTERVAL", "15"))  # faster for live
+PINNACLE_POLL_INTERVAL = int(os.getenv("PINNACLE_POLL_INTERVAL", "15"))  # pregame: was 30s
+PINNACLE_LIVE_POLL_INTERVAL = int(os.getenv("PINNACLE_LIVE_POLL_INTERVAL", "8"))  # live: was 15s
 KELLY_FRACTION = float(os.getenv("KELLY_FRACTION", "0.5"))  # half-Kelly
 # Edge persistence: require edge to be seen on N consecutive checks (30s apart) before betting
 VALUE_EDGE_PERSISTENCE = int(os.getenv("VALUE_EDGE_PERSISTENCE", "2"))
