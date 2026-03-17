@@ -709,6 +709,16 @@ class ArbEngine:
                                match.teams[1], match.pinnacle_prob_b))
 
         for team_side, platform, market_id, team_name, pin_prob in checks:
+            # Skip if Pinnacle odds are frozen (suspended line during live play)
+            if timing == "midgame":
+                frozen = match.pinnacle_frozen_a if team_side == "a" else match.pinnacle_frozen_b
+                if frozen:
+                    logger.debug(
+                        "Value skip (Pinnacle frozen): %s %s — line likely suspended",
+                        team_name, platform,
+                    )
+                    continue
+
             cached = self.prices[platform].get(market_id, {})
             market_ask = cached.get("best_ask", 0)
             if market_ask <= 0:

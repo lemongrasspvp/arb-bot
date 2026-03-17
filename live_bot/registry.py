@@ -28,6 +28,14 @@ class TrackedMatch:
     pinnacle_key: str = ""
     # Timing
     commence_time: str = ""
+    # Pinnacle freeze detection: if odds don't change across consecutive live polls,
+    # the line is likely suspended (goals, set changes, red cards, etc.)
+    _prev_pinnacle_prob_a: float = 0.0
+    _prev_pinnacle_prob_b: float = 0.0
+    pinnacle_frozen_a: bool = False
+    pinnacle_frozen_b: bool = False
+    pinnacle_last_update_a: float = 0.0  # timestamp of last actual change
+    pinnacle_last_update_b: float = 0.0
 
 
 class MarketRegistry:
@@ -84,7 +92,14 @@ class MarketRegistry:
         return None, ""
 
     def update_pinnacle_price(self, team_name: str, sport: str, no_vig_prob: float) -> None:
-        """Update Pinnacle no-vig probability for a team across all matches."""
+        """Update Pinnacle no-vig probability for a team across all matches.
+
+        Also detects frozen/suspended lines: if the odds haven't changed
+        between consecutive polls, mark them as frozen. This catches Pinnacle
+        suspending their line during live events (goals, set changes, etc.).
+        """
+        import time
+        now = time.time()
         norm = _normalize(team_name)
         for match in self.matches.values():
             if sport and match.sport and match.sport != sport:
@@ -92,8 +107,21 @@ class MarketRegistry:
             norm_a = _normalize(match.teams[0])
             norm_b = _normalize(match.teams[1])
             if fuzz.token_sort_ratio(norm, norm_a) > 75:
+                # Freeze detection: same odds as last poll = likely suspended
+                if match._prev_pinnacle_prob_a > 0 and abs(no_vig_prob - match._prev_pinnacle_prob_a) < 0.001:
+                    match.pinnacle_frozen_a = True
+                else:
+                    match.pinnacle_frozen_a = False
+                    match.pinnacle_last_update_a = now
+                match._prev_pinnacle_prob_a = match.pinnacle_prob_a
                 match.pinnacle_prob_a = no_vig_prob
             elif fuzz.token_sort_ratio(norm, norm_b) > 75:
+                if match._prev_pinnacle_prob_b > 0 and abs(no_vig_prob - match._prev_pinnacle_prob_b) < 0.001:
+                    match.pinnacle_frozen_b = True
+                else:
+                    match.pinnacle_frozen_b = False
+                    match.pinnacle_last_update_b = now
+                match._prev_pinnacle_prob_b = match.pinnacle_prob_b
                 match.pinnacle_prob_b = no_vig_prob
 
 
