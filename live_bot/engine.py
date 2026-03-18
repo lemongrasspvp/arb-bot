@@ -892,6 +892,12 @@ class ArbEngine:
 
             # Gather depth and staleness for fill simulation
             depth_usd = cached.get("ask_depth_usd", 0) or (cached.get("ask_size", 0) * market_ask)
+            # Kalshi REST only reports top-of-book size, not full depth.
+            # Full orderbook is typically 5-20× deeper than best level.
+            # Assume $2000 minimum so the fill simulator doesn't reject
+            # every Kalshi bet due to apparent thin books.
+            if platform == "kalshi" and depth_usd < 2000:
+                depth_usd = max(depth_usd, 2000.0)
             price_age = now - cached.get("timestamp", now)
 
             # Execute (pass effective_price which includes VWAP + fees)
