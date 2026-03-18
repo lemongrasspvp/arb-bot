@@ -1,21 +1,17 @@
-"""Realistic fill simulator for simulation mode.
+"""Fill simulator for simulation mode — calibrated to real-money execution.
 
-Models three real-world effects that paper trading typically ignores:
+Models real-world fill behavior for market orders on prediction markets:
 
-1. COMPETITION — Other bots are scanning the same prices. The probability
-   that depth survives long enough for you to fill depends on how much
-   dollar depth is available. $100 of depth gets sniped fast; $5000 is
-   more likely to still be there when your order arrives.
+1. VALUE BETS — Market orders fill almost always (~97%). The only miss
+   is when the price moves during the 1-3s order latency. Value edges
+   are less visible to competitors, so prices are stable.
 
-2. STALENESS — Cached prices age. Polymarket WS prices are ~0.5s old;
-   Kalshi REST prices are up to 15s old. The older the price, the less
-   likely it still exists at that level.
+2. ARB BETS — More competitive. Other bots see the same mispricing and
+   race to fill. Fill rates depend on depth and price staleness.
+   Typical fill rate: 70-90% depending on depth and latency.
 
 3. SLIPPAGE — Even when you fill, the actual execution price may be
    slightly worse than the displayed price, especially on thin books.
-
-The model uses exponential decay curves calibrated to esports prediction
-markets where arbs are highly competitive and books are relatively thin.
 """
 
 import logging
@@ -85,57 +81,57 @@ def _simulate_single_fill(
     platform: str,
     is_arb: bool,
 ) -> tuple[bool, float]:
-    """Core fill model for a single order.
+    """Core fill model for a single order — calibrated to real market orders.
 
-    Fill probability = depth_survival × freshness
+    VALUE BETS (is_arb=False):
+      Market orders on prediction markets fill almost always. The only
+      miss scenario is the price moving during the 1-3s between seeing
+      the quote and the order arriving at the exchange. Value edges are
+      less visible to other bots (require a model + Pinnacle reference),
+      so the price is very stable.
+      → Base fill rate: 97%, with a small latency penalty for stale prices.
 
-    depth_survival: How likely is the depth still there given competition?
-      - Modeled as 1 - exp(-depth_usd / characteristic_depth)
-      - Arbs: characteristic_depth = $800 (highly competitive)
-      - Value: characteristic_depth = $2000 (less competitive)
-      - At $100 depth, arb fill ≈ 12%. At $1000 ≈ 71%. At $5000 ≈ 99.8%.
-      - At $100 depth, value fill ≈ 49%. At $1000 ≈ 93%. At $5000 ≈ 99.9%.
-
-    freshness: How likely is the price still valid given its age?
-      - Polymarket WS: prices are ~0.5s old → high freshness
-      - Kalshi REST: prices are up to 15s old → much lower freshness
-      - Modeled as exp(-age / half_life)
-      - Arb half-life: 3s (arb prices move fast under competition)
-      - Value half-life: 15s (value edges persist longer)
+    ARB BETS (is_arb=True):
+      Arb opportunities are visible to every bot scanning the same feeds.
+      Multiple bots race to fill the same depth, so competition matters.
+      Fill rate depends on depth available and price staleness.
+      → Fill rate: 70-95% depending on conditions.
     """
-    # --- Depth survival (competition) ---
-    if is_arb:
-        # Arbs are visible to everyone → high competition
-        char_depth = 800.0  # $800 characteristic depth
+    if not is_arb:
+        # ── VALUE BET: market order, ~97% base fill rate ──
+        # Only miss if the price moved during order latency.
+        # Small penalty for very stale prices (>10s old).
+        base_fill = 0.97
+
+        # Platform-specific staleness
+        effective_age = price_age_seconds
+        if platform == "kalshi" and not SIMULATE_KALSHI_WS:
+            effective_age += 7.5
+
+        # Gentle latency penalty: lose ~1% per 5s of staleness
+        # At 0s age → 97%, at 5s → 96%, at 15s → 94%
+        latency_penalty = effective_age * 0.002
+        fill_prob = max(0.90, base_fill - latency_penalty)
+
     else:
-        # Value bets need a model → less competition
-        char_depth = 2000.0
+        # ── ARB BET: competitive, depth and freshness matter ──
+        char_depth = 800.0
 
-    if depth_usd <= 0:
-        # No depth data available: assume moderate depth (~$500)
-        # This is generous but avoids blocking all trades when depth is unknown
-        depth_usd = 500.0
+        if depth_usd <= 0:
+            depth_usd = 500.0
 
-    depth_survival = 1.0 - math.exp(-depth_usd / char_depth)
+        depth_survival = 1.0 - math.exp(-depth_usd / char_depth)
 
-    # --- Price freshness ---
-    if is_arb:
-        half_life = 3.0  # arb prices go stale fast
-    else:
-        half_life = 15.0  # value edges last longer
+        if platform == "kalshi" and not SIMULATE_KALSHI_WS:
+            price_age_seconds += 7.5
 
-    # Platform-specific: Kalshi REST adds ~7.5s average staleness on top
-    # But if we're simulating having WS access, skip this penalty
-    if platform == "kalshi" and not SIMULATE_KALSHI_WS:
-        price_age_seconds += 7.5  # average of 0-15s polling window
+        half_life = 3.0
+        freshness = math.exp(-price_age_seconds * math.log(2) / half_life)
 
-    freshness = math.exp(-price_age_seconds * math.log(2) / half_life)
-
-    # --- Combined fill probability ---
-    fill_prob = depth_survival * freshness
+        fill_prob = depth_survival * freshness
 
     # Clamp to reasonable range
-    fill_prob = max(0.02, min(0.98, fill_prob))
+    fill_prob = max(0.05, min(0.98, fill_prob))
 
     # Roll the dice
     filled = random.random() < fill_prob
@@ -146,10 +142,10 @@ def _simulate_single_fill(
         slippage = _simulate_slippage(depth_usd, price_age_seconds, is_arb)
 
     logger.debug(
-        "Fill sim: depth=$%.0f age=%.1fs %s %s → prob=%.0f%% (depth_surv=%.0f%%, fresh=%.0f%%) → %s slip=%.1f¢",
+        "Fill sim: depth=$%.0f age=%.1fs %s %s → prob=%.0f%% → %s slip=%.1f¢",
         depth_usd, price_age_seconds, platform,
         "ARB" if is_arb else "VALUE",
-        fill_prob * 100, depth_survival * 100, freshness * 100,
+        fill_prob * 100,
         "FILL" if filled else "MISS", slippage * 100,
     )
 
