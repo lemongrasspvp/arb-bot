@@ -31,7 +31,10 @@ async def pinnacle_poller(
             count = 0
             for o in pin_outcomes:
                 # Update registry with fresh Pinnacle probabilities
-                registry.update_pinnacle_price(o.outcome_name, o.sport, o.no_vig_prob)
+                registry.update_pinnacle_price(
+                    o.outcome_name, o.sport, o.no_vig_prob,
+                    event_name=o.event_name,
+                )
 
                 # Also push into the price queue for the engine
                 await price_queue.put({

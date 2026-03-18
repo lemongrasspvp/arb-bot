@@ -29,6 +29,8 @@ class MarketOutcome:
     actual_price: float = 0.0  # what you'd actually pay (with vig); 0 = same as implied_prob
     token_id: str = ""         # Polymarket token ID (for order book lookup)
     opponent_raw_id: str = ""  # Kalshi: opponent's ticker (for NO-via-opponent book)
+    market_type: str = "moneyline"  # "moneyline" or "totals"
+    handicap: float = 0.0           # the line (e.g. 2.5) — only for totals
 
 
 @dataclass
@@ -85,7 +87,12 @@ def match_platforms(
     """Match H2H events between two platforms.
 
     Requires BOTH teams in a matchup to fuzzy-match above threshold.
+    Only matches moneyline markets — totals go through match_totals().
     """
+    # Filter out totals outcomes (they use match_totals() instead)
+    platform_a = [o for o in platform_a if o.market_type == "moneyline"]
+    platform_b = [o for o in platform_b if o.market_type == "moneyline"]
+
     if not platform_a or not platform_b:
         return []
 
@@ -147,4 +154,99 @@ def match_platforms(
                 matched.append(best)
 
     logger.info("Matched %d pairs for %s (threshold=%d%%)", len(matched), label, MATCH_CONFIDENCE_THRESHOLD)
+    return matched
+
+
+def match_totals(
+    platform_a: list[MarketOutcome],
+    platform_b: list[MarketOutcome],
+    label: str,
+) -> list[MatchedPair]:
+    """Match over/under (totals) events across two platforms.
+
+    Unlike moneyline matching (which pairs team names), totals matching:
+      1. Filters to market_type == "totals" only
+      2. Fuzzy-matches event names (which contain team names like "G2 vs FaZe")
+      3. Requires exact handicap match (2.5 == 2.5, not 2.5 vs 3.5)
+      4. Pairs Over↔Over and Under↔Under across platforms
+
+    For totals, each event has exactly 2 outcomes: "Over X" and "Under X".
+    """
+    # Filter to totals only
+    totals_a = [o for o in platform_a if o.market_type == "totals" and o.handicap > 0]
+    totals_b = [o for o in platform_b if o.market_type == "totals" and o.handicap > 0]
+
+    if not totals_a or not totals_b:
+        return []
+
+    # Group by (event_name, handicap) — each group should have Over + Under
+    def _group_totals(outcomes: list[MarketOutcome]) -> dict[tuple[str, float], list[MarketOutcome]]:
+        groups: dict[tuple[str, float], list[MarketOutcome]] = {}
+        for o in outcomes:
+            groups.setdefault((o.event_name, o.handicap), []).append(o)
+        return groups
+
+    groups_a = _group_totals(totals_a)
+    groups_b = _group_totals(totals_b)
+
+    matched: list[MatchedPair] = []
+    seen: set[tuple[str, str]] = set()
+
+    for (event_a, hcap_a), outcomes_a in groups_a.items():
+        if len(outcomes_a) < 2:
+            continue
+
+        # Find the Over and Under outcomes
+        over_a = next((o for o in outcomes_a if "over" in o.team_name.lower()), None)
+        under_a = next((o for o in outcomes_a if "under" in o.team_name.lower()), None)
+        if not over_a or not under_a:
+            continue
+
+        best: MatchedPair | None = None
+        best_score = 0.0
+
+        for (event_b, hcap_b), outcomes_b in groups_b.items():
+            # Handicap must match exactly
+            if abs(hcap_a - hcap_b) > 0.01:
+                continue
+
+            if len(outcomes_b) < 2:
+                continue
+
+            # Sport must match
+            if over_a.sport and outcomes_b[0].sport:
+                if over_a.sport != outcomes_b[0].sport:
+                    continue
+
+            over_b = next((o for o in outcomes_b if "over" in o.team_name.lower()), None)
+            under_b = next((o for o in outcomes_b if "under" in o.team_name.lower()), None)
+            if not over_b or not under_b:
+                continue
+
+            # Fuzzy-match event names (which contain team names)
+            score = fuzz.token_sort_ratio(
+                _normalize(event_a), _normalize(event_b)
+            )
+
+            if score < MATCH_CONFIDENCE_THRESHOLD:
+                continue
+
+            if score > best_score:
+                best_score = score
+                best = MatchedPair(
+                    source_a=over_a,
+                    source_b=over_b,
+                    opponent_a=under_a,
+                    opponent_b=under_b,
+                    confidence=score,
+                    pair_label=label,
+                )
+
+        if best:
+            pair_key = (best.source_a.raw_id, best.source_b.raw_id)
+            if pair_key not in seen:
+                seen.add(pair_key)
+                matched.append(best)
+
+    logger.info("Matched %d totals pairs for %s (threshold=%d%%)", len(matched), label, MATCH_CONFIDENCE_THRESHOLD)
     return matched

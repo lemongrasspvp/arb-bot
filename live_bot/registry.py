@@ -94,19 +94,45 @@ class MarketRegistry:
                 return self.matches.get(match_id), ""
         return None, ""
 
-    def update_pinnacle_price(self, team_name: str, sport: str, no_vig_prob: float) -> None:
+    def update_pinnacle_price(
+        self, team_name: str, sport: str, no_vig_prob: float,
+        event_name: str = "",
+    ) -> None:
         """Update Pinnacle no-vig probability for a team across all matches.
 
         Also detects frozen/suspended lines: if the odds haven't changed
         between consecutive polls, mark them as frozen. This catches Pinnacle
         suspending their line during live events (goals, set changes, etc.).
+
+        For totals markets (teams like "Over 2.5"), event_name is required
+        to disambiguate between different events with the same over/under line.
         """
         import time
         now = time.time()
         norm = _normalize(team_name)
+        is_totals = "over" in norm or "under" in norm
+
         for match in self.matches.values():
             if sport and match.sport and match.sport != sport:
                 continue
+
+            # For totals: require event_name match to avoid cross-event contamination
+            # (multiple events can have "Over 2.5" but with different probabilities)
+            if is_totals and event_name:
+                # Check if the event_name matches this match's context
+                norm_event = _normalize(event_name)
+                # For totals, match_id contains team names. Check if both
+                # team names from the event appear in the match_id.
+                event_teams = _extract_teams_from_event(event_name)
+                if event_teams:
+                    t1_norm = _normalize(event_teams[0])
+                    t2_norm = _normalize(event_teams[1])
+                    # At least one team should fuzzy-match in the match_id
+                    mid_norm = _normalize(match.match_id)
+                    if (fuzz.partial_ratio(t1_norm, mid_norm) < 60 and
+                            fuzz.partial_ratio(t2_norm, mid_norm) < 60):
+                        continue
+
             norm_a = _normalize(match.teams[0])
             norm_b = _normalize(match.teams[1])
             if fuzz.token_sort_ratio(norm, norm_a) > 75:
@@ -130,6 +156,14 @@ class MarketRegistry:
                 match.pinnacle_prob_b = no_vig_prob
 
 
+def _extract_teams_from_event(event_name: str) -> tuple[str, str] | None:
+    """Extract team names from an event name like 'G2 vs FaZe'."""
+    m = re.search(r"(.+?)\s+vs\.?\s+(.+?)$", event_name.strip())
+    if m:
+        return m.group(1).strip(), m.group(2).strip()
+    return None
+
+
 def _normalize(text: str) -> str:
     """Normalize team name for matching."""
     text = text.lower().strip()
@@ -150,7 +184,7 @@ def build_registry_from_scanner() -> MarketRegistry:
     from arb_scanner.clients.polymarket import fetch_markets as fetch_polymarket
     from arb_scanner.clients.kalshi import fetch_markets as fetch_kalshi
     from arb_scanner.clients.pinnacle import fetch_odds as fetch_pinnacle
-    from arb_scanner.matcher import MarketOutcome, match_platforms
+    from arb_scanner.matcher import MarketOutcome, match_platforms, match_totals
     from arb_scanner.main import (
         _poly_to_outcomes,
         _kalshi_to_outcomes,
@@ -330,6 +364,51 @@ def build_registry_from_scanner() -> MarketRegistry:
     # Also register Poly-only and Kalshi-only matches (for value betting via Pinnacle)
     _add_single_platform_matches(registry, poly, pin_event_lookup, _find_pinnacle_prob, "polymarket")
     _add_single_platform_matches(registry, kalshi, pin_event_lookup, _find_pinnacle_prob, "kalshi")
+
+    # ── Totals (over/under) markets ──
+    # Match totals across Poly↔Pin for value betting
+    totals_pairs = match_totals(poly, pin, "Poly↔Pin TOTALS")
+    logger.info("Totals matched: Poly↔Pin=%d pairs", len(totals_pairs))
+
+    for pair in totals_pairs:
+        over_poly = pair.source_a       # Over on Polymarket
+        over_pin = pair.source_b        # Over on Pinnacle
+        under_poly = pair.opponent_a    # Under on Polymarket
+        under_pin = pair.opponent_b     # Under on Pinnacle
+
+        if not over_poly or not under_poly or not over_pin or not under_pin:
+            continue
+
+        # Build match_id with handicap (use underscore instead of dot)
+        handicap = over_poly.handicap
+        handicap_str = f"{handicap:g}".replace(".", "_")
+        # Extract team names from event for the match_id
+        event_teams = _extract_teams_from_event(over_poly.event_name)
+        if event_teams:
+            match_id = f"{event_teams[0]}_vs_{event_teams[1]}_{over_poly.sport}_total_{handicap_str}"
+        else:
+            match_id = f"{over_poly.event_name}_{over_poly.sport}_total_{handicap_str}"
+
+        if match_id in registry.matches:
+            continue
+
+        match = TrackedMatch(
+            match_id=match_id,
+            teams=(over_poly.team_name, under_poly.team_name),  # "Over 2.5", "Under 2.5"
+            sport=over_poly.sport,
+            poly_token_id_a=over_poly.token_id,
+            poly_token_id_b=under_poly.token_id,
+            poly_condition_id=over_poly.raw_id,
+            pinnacle_prob_a=over_pin.implied_prob,
+            pinnacle_prob_b=under_pin.implied_prob,
+            commence_time=over_pin.commence_time or over_poly.commence_time,
+        )
+
+        registry.matches[match_id] = match
+        if match.poly_token_id_a:
+            registry._poly_to_match[match.poly_token_id_a] = (match_id, "a")
+        if match.poly_token_id_b:
+            registry._poly_to_match[match.poly_token_id_b] = (match_id, "b")
 
     logger.info("Registry built: %d tracked matches", len(registry.matches))
     return registry

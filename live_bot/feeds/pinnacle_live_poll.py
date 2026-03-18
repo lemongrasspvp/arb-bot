@@ -42,7 +42,10 @@ async def pinnacle_live_poller(
                 for o in live_outcomes:
                     # Update registry with fresh LIVE Pinnacle probabilities
                     # This overwrites the stale pre-game values
-                    registry.update_pinnacle_price(o.outcome_name, o.sport, o.no_vig_prob)
+                    registry.update_pinnacle_price(
+                        o.outcome_name, o.sport, o.no_vig_prob,
+                        event_name=o.event_name,
+                    )
 
                     # Also push into the price queue for the engine
                     await price_queue.put({

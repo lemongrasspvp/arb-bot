@@ -53,6 +53,8 @@ class PolymarketEvent:
     no_ask: float = 0.0   # best ask for NO (what you'd actually pay)
     yes_depth_dollars: float = 0.0  # $ available near best ask for YES
     no_depth_dollars: float = 0.0   # $ available near best ask for NO
+    market_type: str = "moneyline"  # "moneyline" or "totals"
+    handicap: float = 0.0           # the line (e.g. 2.5)
 
 
 def _build_session() -> requests.Session:
@@ -86,6 +88,59 @@ def _is_match_winner_market(market_question: str) -> bool:
         "total sets", "total games", "exact score",
     ]
     return not any(kw in q for kw in prop_keywords)
+
+
+def _is_totals_market(market_question: str) -> bool:
+    """Check if a market is an over/under totals bet for an H2H event.
+
+    Totals questions look like:
+      "CS2: FaZe vs Cloud9 - O/U 2.5 maps"
+      "Will Team A vs Team B go over 2.5 games?"
+      "LoL: G2 vs Fnatic total maps over/under 2.5"
+    """
+    q = market_question.lower()
+    # Must be event-scoped: require "vs" to confirm it's a specific matchup
+    if " vs " not in q and " vs." not in q:
+        return False
+    # Must contain a totals indicator
+    totals_keywords = ["total", "o/u", "over/under", "over ", "under "]
+    if not any(kw in q for kw in totals_keywords):
+        return False
+    # Must NOT be per-map/per-set props (those are individual game lines, not match totals)
+    per_game_keywords = [
+        "game 1", "game 2", "game 3", "game 4", "game 5",
+        "map 1", "map 2", "map 3", "map 4", "map 5",
+        "round 1", "round 2", "round 3",
+        "set 1", "set 2", "set 3",
+        "first blood", "first kill", "first dragon", "first baron",
+        "kill", "dragon", "baron", "tower", "inhibitor",
+    ]
+    return not any(kw in q for kw in per_game_keywords)
+
+
+def _extract_line(text: str) -> float:
+    """Extract the handicap line from a totals question.
+
+    Examples:
+      "O/U 2.5 maps" → 2.5
+      "over 27.5 rounds" → 27.5
+      "total maps over/under 2.5" → 2.5
+
+    Returns 0.0 if no line found.
+    """
+    import re
+    # Look for a decimal number near totals keywords
+    m = re.search(r"(\d+\.5)", text)
+    if m:
+        return float(m.group(1))
+    # Fallback: any float with .5
+    m2 = re.search(r"(\d+\.\d+)", text)
+    if m2:
+        val = float(m2.group(1))
+        # Skip whole numbers (push risk)
+        if val != int(val):
+            return val
+    return 0.0
 
 
 def _get_best_ask(session: requests.Session, token_id: str) -> float:
@@ -222,6 +277,8 @@ def _fetch_clob_price(session: requests.Session, gm: dict) -> PolymarketEvent | 
             no_token_id=no_token_id,
             yes_ask=yes_ask,
             no_ask=no_ask,
+            market_type=gm.get("market_type", "moneyline"),
+            handicap=gm.get("handicap", 0.0),
         )
     except requests.RequestException:
         return None
@@ -275,11 +332,24 @@ def fetch_markets() -> list[PolymarketEvent]:
                         "condition_id": cid,
                         "question": question or event_title,
                         "slug": event_slug,
+                        "market_type": "moneyline",
                     })
+                elif _is_totals_market(question):
+                    line = _extract_line(question)
+                    if line > 0:
+                        gamma_markets.append({
+                            "condition_id": cid,
+                            "question": question or event_title,
+                            "slug": event_slug,
+                            "market_type": "totals",
+                            "handicap": line,
+                        })
 
         logger.info("Gamma %s (tag %d): %d events found", sport, tag_id, len(event_list))
 
-    logger.info("Discovered %d match-winner markets from gamma", len(gamma_markets))
+    ml_count = sum(1 for g in gamma_markets if g.get("market_type") == "moneyline")
+    totals_count = sum(1 for g in gamma_markets if g.get("market_type") == "totals")
+    logger.info("Discovered %d markets from gamma (%d moneyline, %d totals)", len(gamma_markets), ml_count, totals_count)
 
     # Step 2: Fetch live prices from CLOB concurrently
     with ThreadPoolExecutor(max_workers=CLOB_WORKERS) as pool:

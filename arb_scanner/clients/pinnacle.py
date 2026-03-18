@@ -41,11 +41,13 @@ class PinnacleOutcome:
     """A single outcome from a Pinnacle market."""
     event_name: str
     sport: str
-    outcome_name: str         # team name
+    outcome_name: str         # team name (moneyline) or "Over 2.5" / "Under 2.5" (totals)
     raw_price: float          # decimal odds
     implied_prob: float       # before vig removal
     no_vig_prob: float        # after vig removal
     commence_time: str
+    market_type: str = "moneyline"  # "moneyline" or "totals"
+    handicap: float = 0.0           # the line (e.g. 2.5 for over/under 2.5 maps)
 
 
 def _build_session() -> requests.Session:
@@ -220,7 +222,7 @@ def fetch_odds() -> list[PinnacleOutcome]:
                     for price_obj in mkt.get("prices", []):
                         ml_by_matchup.setdefault(mu_id, []).append(price_obj)
 
-            # Convert to outcomes
+            # Convert moneyline to outcomes
             for mu_id, prices in ml_by_matchup.items():
                 if len(prices) < 2:
                     continue
@@ -253,11 +255,77 @@ def fetch_odds() -> list[PinnacleOutcome]:
                         commence_time=info["start"],
                     ))
 
+            # ── Totals (over/under) ──
+            # Pinnacle totals: type="total", period=0 (full match).
+            # The line (handicap) is in prices[].points, not a top-level field.
+            # Only take non-alternate, period 0 (full match) totals.
+            totals_by_key: dict[tuple[int, float], list[dict]] = {}
+            for mkt in markets:
+                if not isinstance(mkt, dict):
+                    continue
+                if mkt.get("type") != "total":
+                    continue
+                if mkt.get("period") != 0:  # full match only
+                    continue
+                if mkt.get("isAlternate", False):
+                    continue
+                mu_id = mkt.get("matchupId")
+                if not mu_id or mu_id not in matchup_info:
+                    continue
+                # Extract handicap from prices[0].points
+                prices = mkt.get("prices", [])
+                if not prices:
+                    continue
+                handicap = prices[0].get("points")
+                if handicap is None:
+                    continue
+                handicap = float(handicap)
+                # Skip whole-number handicaps (push risk makes de-vig unreliable)
+                if handicap == int(handicap):
+                    continue
+                for price_obj in prices:
+                    totals_by_key.setdefault((mu_id, handicap), []).append(price_obj)
+
+            for (mu_id, handicap), prices in totals_by_key.items():
+                # Need exactly over + under
+                over_prices = [p for p in prices if p.get("designation") == "over"]
+                under_prices = [p for p in prices if p.get("designation") == "under"]
+                if not over_prices or not under_prices:
+                    continue
+
+                info = matchup_info[mu_id]
+                handicap_str = f"{handicap:g}"  # "2.5", not "2.50"
+
+                ou_prices = []
+                for label, p_list in [("Over", over_prices), ("Under", under_prices)]:
+                    p = p_list[0]
+                    american_odds = p.get("price", 0)
+                    dec = _american_to_decimal(american_odds)
+                    ou_prices.append((f"{label} {handicap_str}", dec, _decimal_to_implied(dec)))
+
+                implied_probs = [tp[2] for tp in ou_prices]
+                no_vig = _remove_vig(implied_probs)
+
+                for i, (name, dec, imp) in enumerate(ou_prices):
+                    outcomes.append(PinnacleOutcome(
+                        event_name=info["name"],
+                        sport=sport_label,
+                        outcome_name=name,
+                        raw_price=dec,
+                        implied_prob=imp,
+                        no_vig_prob=no_vig[i] if i < len(no_vig) else imp,
+                        commence_time=info["start"],
+                        market_type="totals",
+                        handicap=handicap,
+                    ))
+
         except requests.RequestException:
             logger.debug("Failed to fetch matchups/markets for league %d", league_id)
             continue
 
-    logger.info("Fetched %d Pinnacle esports outcomes", len(outcomes))
+    totals_count = sum(1 for o in outcomes if o.market_type == "totals")
+    logger.info("Fetched %d Pinnacle outcomes (%d moneyline, %d totals)",
+                len(outcomes), len(outcomes) - totals_count, totals_count)
     return outcomes
 
 

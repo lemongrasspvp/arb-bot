@@ -18,7 +18,7 @@ from arb_scanner.clients.betfair import (
     _fetch_book_levels as bf_book_levels,
     _build_client as bf_build_client,
 )
-from arb_scanner.matcher import MarketOutcome, match_platforms
+from arb_scanner.matcher import MarketOutcome, match_platforms, match_totals
 from arb_scanner.calculator import find_arbs, walk_arb_books
 from arb_scanner.clients.polymarket import _fetch_book_levels as poly_book_levels, _build_session as poly_session
 from arb_scanner.clients.kalshi import _fetch_book_levels as kalshi_book_levels, _build_session as kalshi_session
@@ -71,54 +71,94 @@ def _extract_teams(question: str) -> tuple[str, str] | None:
     return None
 
 
+def _detect_sport(slug_lower: str, q_lower: str) -> str:
+    """Detect sport from Polymarket slug and question text."""
+    if "lol" in slug_lower or "league-of-legends" in slug_lower:
+        return "lol"
+    if "dota" in slug_lower:
+        return "dota2"
+    if "valorant" in slug_lower:
+        return "valorant"
+    if "call-of-duty" in slug_lower or "cod" in slug_lower:
+        return "cod"
+    if "ufc" in slug_lower or "ufc" in q_lower or "mma" in slug_lower:
+        return "ufc"
+    if "tennis" in slug_lower or "atp" in slug_lower or "wta" in slug_lower:
+        return "tennis"
+    if "ncaa" in slug_lower or "college-basketball" in slug_lower or "march-madness" in slug_lower:
+        return "ncaab"
+    if "euroleague" in slug_lower:
+        return "euroleague"
+    if "nbl" in slug_lower:
+        return "nbl"
+    return "cs2"
+
+
 def _poly_to_outcomes(poly_events) -> list[MarketOutcome]:
-    """Convert Polymarket events to MarketOutcome pairs."""
+    """Convert Polymarket events to MarketOutcome pairs (moneyline + totals)."""
     outcomes = []
     for e in poly_events:
-        teams = _extract_teams(e.question)
-        if not teams:
-            continue
-        team_a, team_b = teams
-        event_name = e.question
         slug_lower = e.slug.lower()
         q_lower = e.question.lower()
-        if "lol" in slug_lower or "league-of-legends" in slug_lower:
-            sport = "lol"
-        elif "dota" in slug_lower:
-            sport = "dota2"
-        elif "valorant" in slug_lower:
-            sport = "valorant"
-        elif "call-of-duty" in slug_lower or "cod" in slug_lower:
-            sport = "cod"
-        elif "ufc" in slug_lower or "ufc" in q_lower or "mma" in slug_lower:
-            sport = "ufc"
-        elif "tennis" in slug_lower or "atp" in slug_lower or "wta" in slug_lower:
-            sport = "tennis"
-        elif "ncaa" in slug_lower or "college-basketball" in slug_lower or "march-madness" in slug_lower:
-            sport = "ncaab"
-        elif "euroleague" in slug_lower:
-            sport = "euroleague"
-        elif "nbl" in slug_lower:
-            sport = "nbl"
+        sport = _detect_sport(slug_lower, q_lower)
+
+        if e.market_type == "totals":
+            # Totals: YES = Over, NO = Under
+            handicap = e.handicap
+            handicap_str = f"{handicap:g}"
+            # Extract team names for event matching.
+            # Polymarket totals questions: "Team A vs. Team B: Total Sets O/U 2.5"
+            # Strip the totals suffix before extracting teams.
+            q_for_teams = e.question.split(":")[0] if ":" in e.question else e.question
+            q_for_teams = re.sub(
+                r"\s*(O/U|Over|Under|Total\s+\w+)\s*[\d.]*\s*$", "",
+                q_for_teams, flags=re.IGNORECASE,
+            ).strip()
+            teams = _extract_teams(q_for_teams)
+            event_name = f"{teams[0]} vs {teams[1]}" if teams else q_for_teams
+            yes_ask = e.yes_ask if e.yes_ask > 0 else e.yes_price
+            no_ask = e.no_ask if e.no_ask > 0 else e.no_price
+            outcomes.append(MarketOutcome(
+                platform="polymarket", event_name=event_name,
+                team_name=f"Over {handicap_str}", implied_prob=e.yes_price,
+                sport=sport, raw_id=e.condition_id,
+                actual_price=yes_ask,
+                token_id=e.yes_token_id,
+                market_type="totals",
+                handicap=handicap,
+            ))
+            outcomes.append(MarketOutcome(
+                platform="polymarket", event_name=event_name,
+                team_name=f"Under {handicap_str}", implied_prob=e.no_price,
+                sport=sport, raw_id=e.condition_id + "_no",
+                actual_price=no_ask,
+                token_id=e.no_token_id,
+                market_type="totals",
+                handicap=handicap,
+            ))
         else:
-            sport = "cs2"
-        # actual_price = ask (what you'd actually pay), not mid
-        yes_ask = e.yes_ask if e.yes_ask > 0 else e.yes_price
-        no_ask = e.no_ask if e.no_ask > 0 else e.no_price
-        outcomes.append(MarketOutcome(
-            platform="polymarket", event_name=event_name,
-            team_name=team_a, implied_prob=e.yes_price,
-            sport=sport, raw_id=e.condition_id,
-            actual_price=yes_ask,
-            token_id=e.yes_token_id,
-        ))
-        outcomes.append(MarketOutcome(
-            platform="polymarket", event_name=event_name,
-            team_name=team_b, implied_prob=e.no_price,
-            sport=sport, raw_id=e.condition_id + "_no",
-            actual_price=no_ask,
-            token_id=e.no_token_id,
-        ))
+            # Moneyline (existing logic)
+            teams = _extract_teams(e.question)
+            if not teams:
+                continue
+            team_a, team_b = teams
+            event_name = e.question
+            yes_ask = e.yes_ask if e.yes_ask > 0 else e.yes_price
+            no_ask = e.no_ask if e.no_ask > 0 else e.no_price
+            outcomes.append(MarketOutcome(
+                platform="polymarket", event_name=event_name,
+                team_name=team_a, implied_prob=e.yes_price,
+                sport=sport, raw_id=e.condition_id,
+                actual_price=yes_ask,
+                token_id=e.yes_token_id,
+            ))
+            outcomes.append(MarketOutcome(
+                platform="polymarket", event_name=event_name,
+                team_name=team_b, implied_prob=e.no_price,
+                sport=sport, raw_id=e.condition_id + "_no",
+                actual_price=no_ask,
+                token_id=e.no_token_id,
+            ))
     return outcomes
 
 
@@ -131,6 +171,8 @@ def _pinnacle_to_outcomes(pin_outcomes) -> list[MarketOutcome]:
             sport=o.sport, raw_id=f"{o.event_name}_{o.outcome_name}",
             commence_time=o.commence_time,
             actual_price=o.implied_prob,  # with vig — what you'd actually pay
+            market_type=getattr(o, "market_type", "moneyline"),
+            handicap=getattr(o, "handicap", 0.0),
         )
         for o in pin_outcomes
     ]
@@ -336,7 +378,7 @@ def run_scan() -> None:
     if bf:
         _backfill_time(bf)
 
-    # Match across ALL platform pairs
+    # Match across ALL platform pairs (moneyline)
     console.print("[cyan]Matching across platforms...[/cyan]")
     all_pairs = []
     all_pairs.extend(match_platforms(poly, pin, "Poly↔Pin"))
@@ -346,6 +388,23 @@ def run_scan() -> None:
         all_pairs.extend(match_platforms(poly, bf, "Poly↔BF"))
         all_pairs.extend(match_platforms(kalshi, bf, "Kalshi↔BF"))
         all_pairs.extend(match_platforms(bf, pin, "BF↔Pin"))
+
+    # Match totals (over/under) across platforms
+    totals_pairs = []
+    totals_pairs.extend(match_totals(poly, pin, "Poly↔Pin TOTALS"))
+    # Kalshi totals skipped this iteration — no known series tickers
+    all_pairs.extend(totals_pairs)
+
+    # Print sample totals matches for verification
+    if totals_pairs:
+        console.print(f"\n[bold green]Totals matches: {len(totals_pairs)} pairs found[/bold green]")
+        for p in totals_pairs[:3]:
+            console.print(
+                f"  [dim]{p.pair_label}[/dim] {p.source_a.event_name} "
+                f"| {p.source_a.team_name} ({p.source_a.platform}) ↔ "
+                f"{p.source_b.team_name} ({p.source_b.platform}) "
+                f"[dim]conf={p.confidence:.0f}%[/dim]"
+            )
 
     # Backfill commence_time from matched pairs
     _event_times: dict[str, str] = {}
