@@ -38,6 +38,7 @@ from live_bot.config import (
     EARLY_EXIT_TIERS,
     DASHBOARD_PORT,
     VALUE_EDGE_PERSISTENCE,
+    BOT_LOG_PATH,
 )
 
 console = Console()
@@ -47,7 +48,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     handlers=[
-        logging.FileHandler("live_bot.log"),
+        logging.FileHandler(BOT_LOG_PATH),
         logging.StreamHandler(),
     ],
 )
@@ -384,7 +385,8 @@ async def run_bot(live: bool = False) -> None:
         console.print()
         console.print("[bold cyan]═══ Session Summary ═══[/bold cyan]")
         console.print(portfolio.summary())
-        console.print(f"[dim]Trade log: live_bot_trades.jsonl[/dim]")
+        from live_bot.config import TRADE_LOG_PATH
+        console.print(f"[dim]Trade log: {TRADE_LOG_PATH}[/dim]")
         console.print()
 
 
@@ -398,7 +400,8 @@ def main():
         # Just print current trade log stats
         import json
         from pathlib import Path
-        log_path = Path("live_bot_trades.jsonl")
+        from live_bot.config import TRADE_LOG_PATH
+        log_path = Path(TRADE_LOG_PATH)
         if not log_path.exists():
             console.print("[dim]No trade log found.[/dim]")
             return

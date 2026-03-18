@@ -109,9 +109,22 @@ POLYMARKET_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 KALSHI_WS_URL = "wss://api.elections.kalshi.com/trade-api/ws/v2"
 KALSHI_REST_BASE = "https://api.elections.kalshi.com/trade-api/v2"
 
+# ── Data persistence ─────────────────────────────────────────────────
+# Set DATA_DIR to a Railway Volume mount (e.g. "/data") so files survive deploys
+DATA_DIR = os.getenv("DATA_DIR", "")
+if DATA_DIR:
+    Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
+
+def _data_path(filename: str) -> str:
+    """Resolve a data filename to DATA_DIR if set, otherwise current dir."""
+    if DATA_DIR:
+        return str(Path(DATA_DIR) / filename)
+    return filename
+
 # ── Logging ──────────────────────────────────────────────────────────
-TRADE_LOG_PATH = os.getenv("TRADE_LOG_PATH", "live_bot_trades.jsonl")
-BOT_LOG_PATH = os.getenv("BOT_LOG_PATH", "live_bot.log")
+TRADE_LOG_PATH = os.getenv("TRADE_LOG_PATH", _data_path("live_bot_trades.jsonl"))
+BOT_LOG_PATH = os.getenv("BOT_LOG_PATH", _data_path("live_bot.log"))
+POSITIONS_FILE_PATH = _data_path("live_bot_positions.json")
 
 # ── Settlement ──────────────────────────────────────────────────────
 SETTLEMENT_CHECK_INTERVAL = int(os.getenv("SETTLEMENT_CHECK_INTERVAL", "60"))  # seconds

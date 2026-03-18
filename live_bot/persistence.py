@@ -4,9 +4,11 @@ import json
 import logging
 from pathlib import Path
 
+from live_bot.config import POSITIONS_FILE_PATH
+
 logger = logging.getLogger(__name__)
 
-POSITIONS_FILE = Path("live_bot_positions.json")
+POSITIONS_FILE = Path(POSITIONS_FILE_PATH)
 
 
 def save_positions(portfolio) -> None:
