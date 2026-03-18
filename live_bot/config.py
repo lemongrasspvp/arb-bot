@@ -42,8 +42,11 @@ VALUE_EDGE_PERSISTENCE = int(os.getenv("VALUE_EDGE_PERSISTENCE", "2"))
 
 # ── Risk limits ──────────────────────────────────────────────────────
 MAX_POSITION_USD = float(os.getenv("MAX_POSITION_USD", "50"))
-MAX_DAILY_LOSS_USD = float(os.getenv("MAX_DAILY_LOSS_USD", "25"))
-MAX_CONCURRENT_POSITIONS = int(os.getenv("MAX_CONCURRENT_POSITIONS", "5"))
+# Daily loss limit disabled (set to 999999) — we need data, not protection right now.
+# Re-enable with a real value once we go live with real money.
+MAX_DAILY_LOSS_USD = float(os.getenv("MAX_DAILY_LOSS_USD", "999999"))
+# Concurrent position limit disabled — let the bot take every edge it finds.
+MAX_CONCURRENT_POSITIONS = int(os.getenv("MAX_CONCURRENT_POSITIONS", "999"))
 COOLDOWN_SECONDS = float(os.getenv("COOLDOWN_SECONDS", "5"))
 
 # ── Win probability tiers (value bets only) ──────────────────────────
