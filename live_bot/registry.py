@@ -39,6 +39,10 @@ class TrackedMatch:
     # Last time we received ANY Pinnacle data (even if unchanged) — for staleness
     pinnacle_last_seen_a: float = 0.0
     pinnacle_last_seen_b: float = 0.0
+    # Line movement detection: if odds shifted >3% between polls, the line is
+    # actively moving (steam move / sharp action) and our reference is unreliable.
+    pinnacle_moving_a: bool = False
+    pinnacle_moving_b: bool = False
 
 
 class MarketRegistry:
@@ -143,6 +147,10 @@ class MarketRegistry:
                 else:
                     match.pinnacle_frozen_a = False
                     match.pinnacle_last_update_a = now
+                # Line movement detection: >3pp shift between polls = steam move
+                if match.pinnacle_prob_a > 0:
+                    shift = abs(no_vig_prob - match.pinnacle_prob_a)
+                    match.pinnacle_moving_a = shift > 0.03
                 match._prev_pinnacle_prob_a = match.pinnacle_prob_a
                 match.pinnacle_prob_a = no_vig_prob
             elif fuzz.token_sort_ratio(norm, norm_b) > 75:
@@ -152,6 +160,10 @@ class MarketRegistry:
                 else:
                     match.pinnacle_frozen_b = False
                     match.pinnacle_last_update_b = now
+                # Line movement detection
+                if match.pinnacle_prob_b > 0:
+                    shift = abs(no_vig_prob - match.pinnacle_prob_b)
+                    match.pinnacle_moving_b = shift > 0.03
                 match._prev_pinnacle_prob_b = match.pinnacle_prob_b
                 match.pinnacle_prob_b = no_vig_prob
 

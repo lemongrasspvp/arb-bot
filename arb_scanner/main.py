@@ -85,7 +85,7 @@ def _detect_sport(slug_lower: str, q_lower: str) -> str:
         return "ufc"
     if "tennis" in slug_lower or "atp" in slug_lower or "wta" in slug_lower:
         return "tennis"
-    if "ncaa" in slug_lower or "college-basketball" in slug_lower or "march-madness" in slug_lower:
+    if "ncaa" in slug_lower or "cbb" in slug_lower or "college-basketball" in slug_lower or "march-madness" in slug_lower:
         return "ncaab"
     if "euroleague" in slug_lower:
         return "euroleague"

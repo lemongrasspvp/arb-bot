@@ -827,6 +827,17 @@ class ArbEngine:
                     )
                     continue
 
+            # ── Pinnacle line movement check ──
+            # If the Pinnacle line shifted >3pp between polls, sharp money is moving it.
+            # Our reference is unreliable until the line stabilizes.
+            moving = match.pinnacle_moving_a if team_side == "a" else match.pinnacle_moving_b
+            if moving:
+                logger.debug(
+                    "Value skip (Pinnacle moving): %s %s — line shifted >3pp, waiting for stabilization",
+                    team_name, platform,
+                )
+                continue
+
             # ── Pinnacle data age check ──
             # If we haven't received ANY Pinnacle data recently, the reference is stale
             # (API errors, rate limits, etc. — freeze detection won't catch this)
