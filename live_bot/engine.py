@@ -27,6 +27,7 @@ from live_bot.config import (
     MAX_PINNACLE_AGE_SECONDS,
     MAX_PREGAME_HOURS,
     MAX_MATCH_DURATION_HOURS,
+    MAX_POSITION_USD,
 )
 from live_bot.registry import MarketRegistry, TrackedMatch
 from live_bot.portfolio import PaperPortfolio, Trade
@@ -42,6 +43,70 @@ logger = logging.getLogger(__name__)
 def _kalshi_fee(price: float) -> float:
     """Kalshi taker fee per contract: 0.07 * p * (1-p)."""
     return KALSHI_FEE_RATE * price * (1.0 - price)
+
+
+def _max_size_for_edge(
+    ask_levels: list[tuple[float, float]],
+    pin_prob: float,
+    min_edge: float,
+    fee_fn=None,
+) -> float:
+    """Find the maximum USD size that can be filled while keeping edge above min_edge.
+
+    Walks the order book level by level, computing the running VWAP.
+    Stops when adding the next level would push the VWAP (after fees)
+    above the price where the edge drops below min_edge.
+
+    Returns the max safe USD size. If even the best ask doesn't have
+    enough edge, returns 0. If book data isn't available, returns inf
+    (meaning "no cap — we don't know the book").
+    """
+    if not ask_levels:
+        return float("inf")  # No book data → don't cap (use Kelly only)
+
+    # The worst effective price we can tolerate and still have min_edge
+    # edge = (pin_prob / effective_price) - 1 >= min_edge
+    # → effective_price <= pin_prob / (1 + min_edge)
+    max_tolerable_price = pin_prob / (1.0 + min_edge)
+
+    sorted_asks = sorted(ask_levels, key=lambda x: x[0])
+
+    total_shares = 0.0
+    total_cost = 0.0
+
+    for price, size_shares in sorted_asks:
+        level_usd = price * size_shares
+
+        # Compute VWAP if we take this entire level
+        new_shares = total_shares + size_shares
+        new_cost = total_cost + level_usd
+        new_vwap = new_cost / new_shares
+
+        # Apply fee to check effective price
+        effective_vwap = new_vwap
+        if fee_fn:
+            effective_vwap += fee_fn(new_vwap)
+
+        if effective_vwap > max_tolerable_price:
+            # This level would push us over — figure out how much of it we can take
+            # Solve: (total_cost + p * s) / (total_shares + s) <= max_tolerable_price (ignoring fee change)
+            # → s <= (max_tolerable_price * total_shares - total_cost) / (price - max_tolerable_price)
+            if price <= max_tolerable_price and total_shares > 0:
+                denom = price - max_tolerable_price
+                if denom > 0:
+                    partial_shares = (max_tolerable_price * total_shares - total_cost) / denom
+                    partial_shares = max(0, min(partial_shares, size_shares))
+                    total_cost += price * partial_shares
+                    total_shares += partial_shares
+            break
+
+        total_shares += size_shares
+        total_cost += level_usd
+
+    if total_shares <= 0:
+        return 0.0
+
+    return total_cost  # total USD we can safely spend
 
 
 def _compute_vwap(ask_levels: list[tuple[float, float]], size_usd: float) -> float:
@@ -372,7 +437,6 @@ class ArbEngine:
             return
 
         # Determine size — capped by available liquidity on BOTH sides
-        from live_bot.config import MAX_POSITION_USD
         size_usd = min(MAX_POSITION_USD, self.portfolio.current_balance / 2)
 
         # Cap by available liquidity (shares * price = USD available)
@@ -785,7 +849,6 @@ class ArbEngine:
             # --- VWAP-based cost calculation ---
             # Use order book levels if available to get true executable cost
             ask_levels = cached.get("ask_levels", [])
-            from live_bot.config import MAX_POSITION_USD
             intended_size_usd = min(MAX_POSITION_USD, self.portfolio.current_balance / 2)
 
             if ask_levels and intended_size_usd > 0:
@@ -880,6 +943,26 @@ class ArbEngine:
             size = kelly_size(edge, pin_prob, self.portfolio.current_balance)
             if size < 1.0:
                 continue
+
+            # ── Depth-aware size cap ──
+            # If the orderbook is available, cap the bet to the max USD
+            # that can be filled without slippage eating the edge.
+            # This matters as wallet grows and Kelly wants to bet $200+.
+            ask_levels = cached.get("ask_levels", [])
+            fee_fn = _kalshi_fee if platform == "kalshi" else None
+            max_depth_size = _max_size_for_edge(ask_levels, pin_prob, min_edge, fee_fn)
+            if max_depth_size < 1.0:
+                logger.info(
+                    "Value skip (book too thin): %s %s — even best ask kills edge",
+                    team_name, platform,
+                )
+                continue
+            if size > max_depth_size and max_depth_size != float("inf"):
+                logger.info(
+                    "Value bet depth-capped: %s %s — Kelly=$%.0f → capped to $%.0f (book limit)",
+                    team_name, platform, size, max_depth_size,
+                )
+                size = max_depth_size
 
             # Risk check
             proposed = ProposedTrade("VALUE", match.match_id, market_id, size, edge * 100)
