@@ -54,8 +54,18 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-async def _registry_refresher(registry, shutdown_event: asyncio.Event) -> None:
-    """Periodically refresh the market registry to pick up new events."""
+async def _registry_refresher(
+    registry,
+    shutdown_event: asyncio.Event,
+    new_poly_tokens: asyncio.Queue | None = None,
+    new_kalshi_tickers: asyncio.Queue | None = None,
+) -> None:
+    """Periodically refresh the market registry to pick up new events.
+
+    When new matches are discovered, pushes their token IDs / tickers into
+    the feed queues so the WS connections subscribe to them automatically.
+    Also prunes stale matches that are likely over.
+    """
     from live_bot.registry import build_registry_from_scanner
 
     interval = REGISTRY_REFRESH_INTERVAL
@@ -71,10 +81,22 @@ async def _registry_refresher(registry, shutdown_event: asyncio.Event) -> None:
             new_registry = await asyncio.to_thread(build_registry_from_scanner)
             # Merge new matches into existing registry
             added = 0
+            new_poly_ids = []
+            new_kalshi_ids = []
+
             for match_id, match in new_registry.matches.items():
                 if match_id not in registry.matches:
                     registry.matches[match_id] = match
                     added += 1
+                    # Collect new token IDs / tickers for live feeds
+                    if match.poly_token_id_a:
+                        new_poly_ids.append(match.poly_token_id_a)
+                    if match.poly_token_id_b:
+                        new_poly_ids.append(match.poly_token_id_b)
+                    if match.kalshi_ticker_a:
+                        new_kalshi_ids.append(match.kalshi_ticker_a)
+                    if match.kalshi_ticker_b:
+                        new_kalshi_ids.append(match.kalshi_ticker_b)
                 else:
                     # Update Pinnacle prices for existing matches
                     existing = registry.matches[match_id]
@@ -87,9 +109,62 @@ async def _registry_refresher(registry, shutdown_event: asyncio.Event) -> None:
             registry._poly_to_match.update(new_registry._poly_to_match)
             registry._kalshi_to_match.update(new_registry._kalshi_to_match)
 
-            logger.info("Registry refreshed: %d total matches (%d new)", len(registry.matches), added)
+            # Push new tokens to live feeds so they subscribe
+            if new_poly_tokens:
+                for token_id in new_poly_ids:
+                    await new_poly_tokens.put(token_id)
+            if new_kalshi_tickers:
+                for ticker in new_kalshi_ids:
+                    await new_kalshi_tickers.put(ticker)
+
+            # ── Prune stale matches (likely over) ──
+            pruned = _prune_stale_matches(registry)
+
+            logger.info(
+                "Registry refreshed: %d total matches (%d new, %d pruned, %d new tokens, %d new tickers)",
+                len(registry.matches), added, pruned, len(new_poly_ids), len(new_kalshi_ids),
+            )
         except Exception:
             logger.exception("Error refreshing registry")
+
+
+def _prune_stale_matches(registry) -> int:
+    """Remove matches from the registry that are likely over.
+
+    A match is considered stale if its commence_time + MAX_MATCH_DURATION_HOURS
+    is in the past. This prevents the registry from growing indefinitely.
+    """
+    from datetime import datetime, timezone
+    from live_bot.config import MAX_MATCH_DURATION_HOURS
+
+    now = datetime.now(timezone.utc)
+    stale_ids = []
+
+    for match_id, match in registry.matches.items():
+        if not match.commence_time:
+            continue
+        try:
+            ct = match.commence_time
+            if ct.endswith("Z"):
+                ct = ct[:-1] + "+00:00"
+            start = datetime.fromisoformat(ct)
+            hours_since = (now - start).total_seconds() / 3600
+            if hours_since > MAX_MATCH_DURATION_HOURS:
+                stale_ids.append(match_id)
+        except (ValueError, TypeError):
+            continue
+
+    for match_id in stale_ids:
+        match = registry.matches.pop(match_id, None)
+        if match:
+            # Clean up reverse lookups
+            for token_id in [match.poly_token_id_a, match.poly_token_id_b]:
+                registry._poly_to_match.pop(token_id, None)
+            for ticker in [match.kalshi_ticker_a, match.kalshi_ticker_b]:
+                registry._kalshi_to_match.pop(ticker, None)
+            logger.debug("Pruned stale match: %s", match_id)
+
+    return len(stale_ids)
 
 
 async def _status_printer(portfolio, shutdown_event: asyncio.Event) -> None:
@@ -204,9 +279,13 @@ async def run_bot(live: bool = False) -> None:
         on_trade_fn=lambda: save_positions(portfolio),
     )
 
-    # Step 5: Create shared queue and shutdown event
+    # Step 5: Create shared queues and shutdown event
     price_queue = asyncio.Queue()
     shutdown_event = asyncio.Event()
+
+    # Queues for feeding new tokens/tickers from registry refresh to live feeds
+    new_poly_tokens = asyncio.Queue()
+    new_kalshi_tickers = asyncio.Queue()
 
     # Handle SIGINT/SIGTERM gracefully
     def _signal_handler():
@@ -221,62 +300,81 @@ async def run_bot(live: bool = False) -> None:
     console.print(f"[green]Dashboard: http://0.0.0.0:{DASHBOARD_PORT}[/green]")
     console.print("[dim]Press Ctrl+C to stop[/dim]\n")
 
-    # Step 6: Run everything concurrently
-    tasks = [
-        asyncio.create_task(
-            polymarket_feed(registry.poly_token_ids, price_queue, shutdown_event),
-            name="polymarket_feed",
-        ),
-        asyncio.create_task(
-            kalshi_feed(registry.kalshi_tickers, price_queue, shutdown_event),
-            name="kalshi_feed",
-        ),
-        asyncio.create_task(
-            pinnacle_poller(registry, price_queue, shutdown_event),
-            name="pinnacle_poller",
-        ),
-        asyncio.create_task(
-            pinnacle_live_poller(registry, price_queue, shutdown_event),
-            name="pinnacle_live_poller",
-        ),
-        asyncio.create_task(
-            engine.run(price_queue, shutdown_event),
-            name="engine",
-        ),
-        asyncio.create_task(
-            _registry_refresher(registry, shutdown_event),
-            name="registry_refresher",
-        ),
-        asyncio.create_task(
-            _status_printer(portfolio, shutdown_event),
-            name="status_printer",
-        ),
-        asyncio.create_task(
-            settlement_loop(
+    # Step 6: Define task specs for crash recovery
+    # Each is (name, coroutine_factory) — factory so we can recreate on crash
+    def _make_tasks():
+        return {
+            "polymarket_feed": lambda: polymarket_feed(
+                registry.poly_token_ids, price_queue, shutdown_event, new_poly_tokens,
+            ),
+            "kalshi_feed": lambda: kalshi_feed(
+                registry.kalshi_tickers, price_queue, shutdown_event, new_kalshi_tickers,
+            ),
+            "pinnacle_poller": lambda: pinnacle_poller(
+                registry, price_queue, shutdown_event,
+            ),
+            "pinnacle_live_poller": lambda: pinnacle_live_poller(
+                registry, price_queue, shutdown_event,
+            ),
+            "engine": lambda: engine.run(price_queue, shutdown_event),
+            "registry_refresher": lambda: _registry_refresher(
+                registry, shutdown_event, new_poly_tokens, new_kalshi_tickers,
+            ),
+            "status_printer": lambda: _status_printer(portfolio, shutdown_event),
+            "settlement_checker": lambda: settlement_loop(
                 portfolio, registry,
                 lambda: save_positions(portfolio),
                 shutdown_event,
             ),
-            name="settlement_checker",
-        ),
-        asyncio.create_task(
-            engine.early_exit_loop(shutdown_event),
-            name="early_exit_checker",
-        ),
-        asyncio.create_task(
-            dashboard_server(portfolio, shutdown_event),
-            name="dashboard",
-        ),
-    ]
+            "early_exit_checker": lambda: engine.early_exit_loop(shutdown_event),
+            "dashboard": lambda: dashboard_server(portfolio, shutdown_event),
+        }
+
+    task_factories = _make_tasks()
+    tasks: dict[str, asyncio.Task] = {}
+
+    # Launch all tasks
+    for name, factory in task_factories.items():
+        tasks[name] = asyncio.create_task(factory(), name=name)
 
     try:
-        # Wait until shutdown is requested
-        await shutdown_event.wait()
+        # Monitor tasks — restart any that crash unexpectedly
+        while not shutdown_event.is_set():
+            # Check every 10 seconds for crashed tasks
+            try:
+                await asyncio.wait_for(shutdown_event.wait(), timeout=10)
+                break  # shutdown requested
+            except asyncio.TimeoutError:
+                pass
+
+            for name, task in list(tasks.items()):
+                if task.done() and not shutdown_event.is_set():
+                    exc = task.exception() if not task.cancelled() else None
+                    if exc:
+                        logger.error(
+                            "Task '%s' crashed: %s — restarting in 5s",
+                            name, exc,
+                        )
+                        console.print(f"[red]⚠️  Task '{name}' crashed: {exc} — restarting...[/red]")
+                        await asyncio.sleep(5)
+                        # Restart the task
+                        if name in task_factories:
+                            tasks[name] = asyncio.create_task(
+                                task_factories[name](), name=name,
+                            )
+                            logger.info("Task '%s' restarted", name)
+                    else:
+                        # Task completed normally (shouldn't happen for long-running tasks)
+                        logger.warning("Task '%s' completed unexpectedly — restarting", name)
+                        if name in task_factories:
+                            tasks[name] = asyncio.create_task(
+                                task_factories[name](), name=name,
+                            )
     finally:
         # Cancel all tasks
-        for task in tasks:
+        for task in tasks.values():
             task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*tasks.values(), return_exceptions=True)
 
         # Save positions before exit
         save_positions(portfolio)

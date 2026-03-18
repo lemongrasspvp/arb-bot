@@ -30,6 +30,8 @@ SPORT_TAGS = {
     "valorant": 101672,
     "ufc": 279,
     "tennis": 864,
+    "ncaab": 102114,
+    # Note: EuroLeague + NBL have no active Polymarket markets (no tags exist)
 }
 
 # Concurrent CLOB fetches — Polymarket CLOB is generous with rate limits

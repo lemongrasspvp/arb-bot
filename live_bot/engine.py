@@ -24,6 +24,9 @@ from live_bot.config import (
     EARLY_EXIT_SPREAD_COST,
     VALUE_EDGE_PERSISTENCE,
     MAX_VALUE_EDGE_PCT,
+    MAX_PINNACLE_AGE_SECONDS,
+    MAX_PREGAME_HOURS,
+    MAX_MATCH_DURATION_HOURS,
 )
 from live_bot.registry import MarketRegistry, TrackedMatch
 from live_bot.portfolio import PaperPortfolio, Trade
@@ -691,6 +694,47 @@ class ArbEngine:
         if timing == "midgame" and not ALLOW_MIDGAME_VALUE:
             return
 
+        # ── Sanity: Pinnacle probabilities should sum to ~1.0 ──
+        # If they don't, the fuzzy matcher likely linked the wrong teams.
+        if match.pinnacle_prob_a > 0 and match.pinnacle_prob_b > 0:
+            prob_sum = match.pinnacle_prob_a + match.pinnacle_prob_b
+            if prob_sum < 0.85 or prob_sum > 1.15:
+                logger.debug(
+                    "Value skip (prob sanity): %s — pin_a=%.0f%% + pin_b=%.0f%% = %.0f%% (expected ~100%%)",
+                    match.match_id,
+                    match.pinnacle_prob_a * 100, match.pinnacle_prob_b * 100,
+                    prob_sum * 100,
+                )
+                return
+
+        # ── Timing guards: skip matches too far away or likely over ──
+        if match.commence_time:
+            try:
+                ct = match.commence_time
+                if ct.endswith("Z"):
+                    ct = ct[:-1] + "+00:00"
+                start = datetime.fromisoformat(ct)
+                now_dt = datetime.now(timezone.utc)
+                hours_until = (start - now_dt).total_seconds() / 3600
+
+                # Too far in the future — odds will shift, not worth betting yet
+                if hours_until > MAX_PREGAME_HOURS:
+                    logger.debug(
+                        "Value skip (too early): %s — %.0fh until start (max %.0fh)",
+                        match.match_id, hours_until, MAX_PREGAME_HOURS,
+                    )
+                    return
+
+                # Match likely over — commence + duration exceeded
+                if hours_until < 0 and abs(hours_until) > MAX_MATCH_DURATION_HOURS:
+                    logger.debug(
+                        "Value skip (match likely over): %s — started %.0fh ago (max %.0fh)",
+                        match.match_id, abs(hours_until), MAX_MATCH_DURATION_HOURS,
+                    )
+                    return
+            except (ValueError, TypeError):
+                pass  # can't parse, continue with other checks
+
         # Check each team on each platform
         checks = []
         if match.pinnacle_prob_a > 0:
@@ -716,6 +760,20 @@ class ArbEngine:
                     logger.debug(
                         "Value skip (Pinnacle frozen): %s %s — line likely suspended",
                         team_name, platform,
+                    )
+                    continue
+
+            # ── Pinnacle data age check ──
+            # If we haven't received ANY Pinnacle data recently, the reference is stale
+            # (API errors, rate limits, etc. — freeze detection won't catch this)
+            last_seen = match.pinnacle_last_seen_a if team_side == "a" else match.pinnacle_last_seen_b
+            now = time.time()
+            if last_seen > 0:
+                pin_age = now - last_seen
+                if pin_age > MAX_PINNACLE_AGE_SECONDS:
+                    logger.debug(
+                        "Value skip (Pinnacle stale): %s %s — last data %.0fs ago (max %.0fs)",
+                        team_name, platform, pin_age, MAX_PINNACLE_AGE_SECONDS,
                     )
                     continue
 

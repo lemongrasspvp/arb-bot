@@ -94,6 +94,12 @@ def _poly_to_outcomes(poly_events) -> list[MarketOutcome]:
             sport = "ufc"
         elif "tennis" in slug_lower or "atp" in slug_lower or "wta" in slug_lower:
             sport = "tennis"
+        elif "ncaa" in slug_lower or "college-basketball" in slug_lower or "march-madness" in slug_lower:
+            sport = "ncaab"
+        elif "euroleague" in slug_lower:
+            sport = "euroleague"
+        elif "nbl" in slug_lower:
+            sport = "nbl"
         else:
             sport = "cs2"
         # actual_price = ask (what you'd actually pay), not mid

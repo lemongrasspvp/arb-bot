@@ -31,7 +31,7 @@ KALSHI_PRIVATE_KEY_CONTENT = os.getenv("KALSHI_PRIVATE_KEY_CONTENT", "")
 MIN_ARB_PROFIT_PCT = float(os.getenv("MIN_ARB_PROFIT_PCT", "1.5"))
 
 # ── Value settings (Strategy 2) ──────────────────────────────────────
-MIN_VALUE_EDGE_PCT = float(os.getenv("MIN_VALUE_EDGE_PCT", "3.0"))
+MIN_VALUE_EDGE_PCT = float(os.getenv("MIN_VALUE_EDGE_PCT", "4.0"))
 # Midgame (live) value bets require a larger edge buffer due to stale refs + execution delay
 MIDGAME_VALUE_EDGE_PCT = float(os.getenv("MIDGAME_VALUE_EDGE_PCT", "8.0"))
 PINNACLE_POLL_INTERVAL = int(os.getenv("PINNACLE_POLL_INTERVAL", "8"))  # pregame
@@ -71,6 +71,12 @@ ALLOW_MIDGAME_VALUE = os.getenv("ALLOW_MIDGAME_VALUE", "true").lower() == "true"
 MAX_PRICE_DIVERGENCE_PCT = float(os.getenv("MAX_PRICE_DIVERGENCE_PCT", "10"))
 # Max believable edge — anything above this is almost certainly stale/mismatched data
 MAX_VALUE_EDGE_PCT = float(os.getenv("MAX_VALUE_EDGE_PCT", "20"))
+# Max seconds since last Pinnacle data before we consider it stale (default 120s = 2 min)
+MAX_PINNACLE_AGE_SECONDS = float(os.getenv("MAX_PINNACLE_AGE_SECONDS", "120"))
+# Max hours before match start to accept pregame bets (skip if match is >24h away)
+MAX_PREGAME_HOURS = float(os.getenv("MAX_PREGAME_HOURS", "24"))
+# Max hours after commence_time before we assume the match is over (skip stale matches)
+MAX_MATCH_DURATION_HOURS = float(os.getenv("MAX_MATCH_DURATION_HOURS", "8"))
 
 # ── Maker order simulation ────────────────────────────────────────────
 # Polymarket maker rebate: ~0.5% of notional (you get paid instead of paying)

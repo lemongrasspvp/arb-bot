@@ -3,15 +3,16 @@
 import json
 import logging
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from live_bot.config import TRADE_LOG_PATH
 
 logger = logging.getLogger(__name__)
 
-# CET timezone
-CET = timezone(timedelta(hours=1))
+# Europe/Copenhagen handles CET/CEST (DST) automatically
+LOCAL_TZ = ZoneInfo("Europe/Copenhagen")
 
 
 def _init_log_file() -> Path:
@@ -45,7 +46,7 @@ def log_trade(
     extra: dict | None = None,
 ) -> None:
     """Write a trade event to the JSON lines log file."""
-    now = datetime.now(CET)
+    now = datetime.now(LOCAL_TZ)
     record = {
         "timestamp": now.isoformat(),
         "unix_ts": time.time(),
@@ -100,7 +101,7 @@ def log_trade(
 
 def log_event(event_type: str, message: str, **kwargs) -> None:
     """Log a non-trade event (connection, error, registry update, etc.)."""
-    now = datetime.now(CET)
+    now = datetime.now(LOCAL_TZ)
     record = {
         "timestamp": now.isoformat(),
         "unix_ts": time.time(),

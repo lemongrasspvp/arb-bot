@@ -70,58 +70,88 @@ async def kalshi_feed(
     tickers: list[str],
     price_queue: asyncio.Queue,
     shutdown_event: asyncio.Event | None = None,
+    new_tickers_queue: asyncio.Queue | None = None,
 ) -> None:
     """Stream Kalshi price updates.
 
     Uses WebSocket if API credentials are available, otherwise falls back
     to REST polling (Kalshi WS requires auth for all channels).
+
+    If new_tickers_queue is provided, periodically checks it for new tickers
+    to subscribe to (from registry refresh).
     """
-    if not tickers:
+    if not tickers and not new_tickers_queue:
         logger.warning("No Kalshi tickers to subscribe — feed idle")
         return
 
     has_creds = bool(KALSHI_API_KEY_ID and KALSHI_PRIVATE_KEY_PATH)
 
     if has_creds:
-        await _kalshi_ws_feed(tickers, price_queue, shutdown_event)
+        await _kalshi_ws_feed(tickers, price_queue, shutdown_event, new_tickers_queue)
     else:
         logger.info("No Kalshi API keys — falling back to REST polling (every 15s)")
-        await _kalshi_rest_feed(tickers, price_queue, shutdown_event)
+        await _kalshi_rest_feed(tickers, price_queue, shutdown_event, new_tickers_queue)
 
 
 async def _kalshi_ws_feed(
     tickers: list[str],
     price_queue: asyncio.Queue,
     shutdown_event: asyncio.Event | None = None,
+    new_tickers_queue: asyncio.Queue | None = None,
 ) -> None:
     """WebSocket-based Kalshi feed (requires API credentials)."""
+    subscribed_tickers = set(tickers)
     backoff = 1
     while not (shutdown_event and shutdown_event.is_set()):
         try:
             extra_headers = _sign_ws_request()
 
-            logger.info("Connecting to Kalshi WebSocket (%d tickers)...", len(tickers))
+            logger.info("Connecting to Kalshi WebSocket (%d tickers)...", len(subscribed_tickers))
             async with websockets.connect(
                 KALSHI_WS_URL,
                 additional_headers=extra_headers,
                 ping_interval=20,
                 ssl=_ssl_ctx,
             ) as ws:
-                sub_msg = json.dumps({
-                    "id": 1,
-                    "cmd": "subscribe",
-                    "params": {
-                        "channels": ["ticker"],
-                        "market_tickers": tickers,
-                    },
-                })
-                await ws.send(sub_msg)
-                logger.info("Kalshi WS subscribed to %d tickers", len(tickers))
+                if subscribed_tickers:
+                    sub_msg = json.dumps({
+                        "id": 1,
+                        "cmd": "subscribe",
+                        "params": {
+                            "channels": ["ticker"],
+                            "market_tickers": list(subscribed_tickers),
+                        },
+                    })
+                    await ws.send(sub_msg)
+                logger.info("Kalshi WS subscribed to %d tickers", len(subscribed_tickers))
                 backoff = 1
 
                 async for raw_msg in ws:
                     if shutdown_event and shutdown_event.is_set():
                         break
+
+                    # Check for new tickers to subscribe to
+                    if new_tickers_queue:
+                        new_ids = []
+                        while not new_tickers_queue.empty():
+                            try:
+                                new_id = new_tickers_queue.get_nowait()
+                                if new_id not in subscribed_tickers:
+                                    new_ids.append(new_id)
+                                    subscribed_tickers.add(new_id)
+                            except asyncio.QueueEmpty:
+                                break
+                        if new_ids:
+                            add_sub = json.dumps({
+                                "id": 2,
+                                "cmd": "subscribe",
+                                "params": {
+                                    "channels": ["ticker"],
+                                    "market_tickers": new_ids,
+                                },
+                            })
+                            await ws.send(add_sub)
+                            logger.info("Kalshi WS subscribed to %d NEW tickers (total: %d)", len(new_ids), len(subscribed_tickers))
 
                     try:
                         data = json.loads(raw_msg)
@@ -149,6 +179,7 @@ async def _kalshi_rest_feed(
     tickers: list[str],
     price_queue: asyncio.Queue,
     shutdown_event: asyncio.Event | None = None,
+    new_tickers_queue: asyncio.Queue | None = None,
 ) -> None:
     """REST polling fallback for Kalshi (no auth needed for public orderbook)."""
     import requests as req
@@ -157,10 +188,22 @@ async def _kalshi_rest_feed(
     session = req.Session()
     session.headers["Accept"] = "application/json"
     poll_interval = 15  # seconds
+    active_tickers = list(tickers)
 
     while not (shutdown_event and shutdown_event.is_set()):
+        # Check for new tickers from registry refresh
+        if new_tickers_queue:
+            while not new_tickers_queue.empty():
+                try:
+                    new_id = new_tickers_queue.get_nowait()
+                    if new_id not in active_tickers:
+                        active_tickers.append(new_id)
+                        logger.info("Kalshi REST added new ticker: %s (total: %d)", new_id, len(active_tickers))
+                except asyncio.QueueEmpty:
+                    break
+
         try:
-            for ticker in tickers:
+            for ticker in active_tickers:
                 if shutdown_event and shutdown_event.is_set():
                     break
                 try:

@@ -24,33 +24,60 @@ async def polymarket_feed(
     token_ids: list[str],
     price_queue: asyncio.Queue,
     shutdown_event: asyncio.Event | None = None,
+    new_tokens_queue: asyncio.Queue | None = None,
 ) -> None:
     """Connect to Polymarket CLOB WebSocket and stream price updates.
 
     Subscribes to the given token IDs and pushes PriceUpdate dicts
     into the shared price_queue whenever best ask/bid changes.
+
+    If new_tokens_queue is provided, periodically checks it for new token IDs
+    to subscribe to (from registry refresh).
     """
     if not token_ids:
         logger.warning("No Polymarket token IDs to subscribe — feed idle")
-        return
+        # Even with no initial tokens, wait for new ones
+        if not new_tokens_queue:
+            return
 
+    subscribed_ids = set(token_ids)
     backoff = 1
     while not (shutdown_event and shutdown_event.is_set()):
         try:
-            logger.info("Connecting to Polymarket WebSocket (%d tokens)...", len(token_ids))
+            logger.info("Connecting to Polymarket WebSocket (%d tokens)...", len(subscribed_ids))
             async with websockets.connect(POLYMARKET_WS_URL, ping_interval=PING_INTERVAL, ssl=_ssl_ctx) as ws:
                 # Subscribe to market channel for all token IDs
-                sub_msg = json.dumps({
-                    "assets_ids": token_ids,
-                    "type": "market",
-                })
-                await ws.send(sub_msg)
-                logger.info("Polymarket WS subscribed to %d tokens", len(token_ids))
+                if subscribed_ids:
+                    sub_msg = json.dumps({
+                        "assets_ids": list(subscribed_ids),
+                        "type": "market",
+                    })
+                    await ws.send(sub_msg)
+                logger.info("Polymarket WS subscribed to %d tokens", len(subscribed_ids))
                 backoff = 1  # reset on successful connection
 
                 async for raw_msg in ws:
                     if shutdown_event and shutdown_event.is_set():
                         break
+
+                    # Check for new tokens to subscribe to
+                    if new_tokens_queue:
+                        new_ids = []
+                        while not new_tokens_queue.empty():
+                            try:
+                                new_id = new_tokens_queue.get_nowait()
+                                if new_id not in subscribed_ids:
+                                    new_ids.append(new_id)
+                                    subscribed_ids.add(new_id)
+                            except asyncio.QueueEmpty:
+                                break
+                        if new_ids:
+                            add_sub = json.dumps({
+                                "assets_ids": new_ids,
+                                "type": "market",
+                            })
+                            await ws.send(add_sub)
+                            logger.info("Polymarket WS subscribed to %d NEW tokens (total: %d)", len(new_ids), len(subscribed_ids))
 
                     try:
                         data = json.loads(raw_msg)

@@ -36,6 +36,9 @@ class TrackedMatch:
     pinnacle_frozen_b: bool = False
     pinnacle_last_update_a: float = 0.0  # timestamp of last actual change
     pinnacle_last_update_b: float = 0.0
+    # Last time we received ANY Pinnacle data (even if unchanged) — for staleness
+    pinnacle_last_seen_a: float = 0.0
+    pinnacle_last_seen_b: float = 0.0
 
 
 class MarketRegistry:
@@ -107,6 +110,7 @@ class MarketRegistry:
             norm_a = _normalize(match.teams[0])
             norm_b = _normalize(match.teams[1])
             if fuzz.token_sort_ratio(norm, norm_a) > 75:
+                match.pinnacle_last_seen_a = now  # always update: we got data
                 # Freeze detection: same odds as last poll = likely suspended
                 if match._prev_pinnacle_prob_a > 0 and abs(no_vig_prob - match._prev_pinnacle_prob_a) < 0.001:
                     match.pinnacle_frozen_a = True
@@ -116,6 +120,7 @@ class MarketRegistry:
                 match._prev_pinnacle_prob_a = match.pinnacle_prob_a
                 match.pinnacle_prob_a = no_vig_prob
             elif fuzz.token_sort_ratio(norm, norm_b) > 75:
+                match.pinnacle_last_seen_b = now  # always update: we got data
                 if match._prev_pinnacle_prob_b > 0 and abs(no_vig_prob - match._prev_pinnacle_prob_b) < 0.001:
                     match.pinnacle_frozen_b = True
                 else:
