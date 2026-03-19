@@ -276,7 +276,7 @@ async def run_bot(live: bool = False) -> None:
         console.print(f"[green]Backfilled {backfilled} filled trades from log (avg edge {avg_edge:.1f}%)[/green]")
 
     # One-time voids: refund midgame bets that shouldn't have been placed
-    _voids = ["Dalma Galfi", "Golubic"]
+    _voids = ["Dalma Galfi", "Golubic", "FURIA fe"]
     for v in _voids:
         if portfolio.void_position(v):
             console.print(f"[yellow]Voided position: {v}[/yellow]")
