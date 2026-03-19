@@ -67,7 +67,7 @@ SIMULATE_KALSHI_WS = os.getenv("SIMULATE_KALSHI_WS", "true").lower() == "true"
 MIN_ARB_DEPTH_USD = float(os.getenv("MIN_ARB_DEPTH_USD", "200"))
 
 # ── Timing / staleness guards ──────────────────────────────────────
-ALLOW_MIDGAME_VALUE = os.getenv("ALLOW_MIDGAME_VALUE", "true").lower() == "true"
+ALLOW_MIDGAME_VALUE = os.getenv("ALLOW_MIDGAME_VALUE", "false").lower() == "true"
 # Max divergence between Pinnacle ref and market price (percentage points).
 # If |pin_prob - market_price| > this, the Pinnacle reference is likely stale → skip.
 # Tightened from 15 → 10: a 14pp gap (e.g. pin=43% vs market=28¢) is almost always stale

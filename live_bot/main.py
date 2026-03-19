@@ -275,6 +275,14 @@ async def run_bot(live: bool = False) -> None:
         avg_edge = portfolio.value_edge_sum / portfolio.value_filled_count if portfolio.value_filled_count else 0
         console.print(f"[green]Backfilled {backfilled} filled trades from log (avg edge {avg_edge:.1f}%)[/green]")
 
+    # One-time voids: refund midgame bets that shouldn't have been placed
+    _voids = ["Dalma Galfi"]
+    for v in _voids:
+        if portfolio.void_position(v):
+            console.print(f"[yellow]Voided position: {v}[/yellow]")
+            from live_bot.persistence import save_positions
+            save_positions(portfolio)
+
     # Step 4: Initialize engine
     engine = ArbEngine(
         registry, poly_exec, kalshi_exec, portfolio,
@@ -324,9 +332,9 @@ async def run_bot(live: bool = False) -> None:
             "pinnacle_poller": lambda: pinnacle_poller(
                 registry, price_queue, shutdown_event,
             ),
-            "pinnacle_live_poller": lambda: pinnacle_live_poller(
+            **({"pinnacle_live_poller": lambda: pinnacle_live_poller(
                 registry, price_queue, shutdown_event,
-            ),
+            )} if ALLOW_MIDGAME_VALUE else {}),
             "engine": lambda: engine.run(price_queue, shutdown_event),
             "registry_refresher": lambda: _registry_refresher(
                 registry, shutdown_event, new_poly_tokens, new_kalshi_tickers,

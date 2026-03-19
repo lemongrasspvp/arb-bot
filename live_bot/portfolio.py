@@ -266,6 +266,30 @@ class PaperPortfolio:
 
         return pnl
 
+    def void_position(self, team_substring: str) -> bool:
+        """Void/refund a position by team name substring. Returns True if found.
+
+        Removes the position and refunds the cost back to balance.
+        Decrements the relevant counters so stats stay accurate.
+        """
+        for i, pos in enumerate(self.positions):
+            if team_substring.lower() in pos.team.lower():
+                self.current_balance += pos.cost_usd
+                # Fix counters
+                if pos.strategy == "VALUE":
+                    self.value_filled_count = max(0, self.value_filled_count - 1)
+                    if pos.timing == "midgame":
+                        self.midgame_value_count = max(0, self.midgame_value_count - 1)
+                    else:
+                        self.pregame_value_count = max(0, self.pregame_value_count - 1)
+                logger.info(
+                    "VOIDED: %s %s — $%.2f refunded | balance=$%.2f",
+                    pos.team, pos.platform, pos.cost_usd, self.current_balance,
+                )
+                self.positions.pop(i)
+                return True
+        return False
+
     def summary(self) -> str:
         """Return a human-readable summary of portfolio state."""
         self._check_daily_reset()
