@@ -136,50 +136,20 @@ def _simulate_single_fill(
     # Roll the dice
     filled = random.random() < fill_prob
 
-    # --- Slippage (if filled) ---
+    # Slippage is already accounted for by the VWAP calculation in the engine
+    # (which walks the real orderbook). No need to simulate additional slippage.
     slippage = 0.0
-    if filled:
-        slippage = _simulate_slippage(depth_usd, price_age_seconds, is_arb)
 
     logger.debug(
-        "Fill sim: depth=$%.0f age=%.1fs %s %s → prob=%.0f%% → %s slip=%.1f¢",
+        "Fill sim: depth=$%.0f age=%.1fs %s %s → prob=%.0f%% → %s",
         depth_usd, price_age_seconds, platform,
         "ARB" if is_arb else "VALUE",
         fill_prob * 100,
-        "FILL" if filled else "MISS", slippage * 100,
+        "FILL" if filled else "MISS",
     )
 
     return filled, slippage
 
 
-def _simulate_slippage(
-    depth_usd: float,
-    price_age: float,
-    is_arb: bool,
-) -> float:
-    """Model price slippage: how much worse is the actual fill price?
-
-    Slippage comes from:
-    1. Book depth: thin books → more slippage to fill your size
-    2. Price movement: older prices → more likely to have moved
-
-    Returns slippage as a fraction (e.g., 0.01 = 1 cent worse).
-    """
-    # Base slippage: random 0-1 cent
-    base = random.uniform(0, 0.01)
-
-    # Depth-based: thinner books → more slippage
-    # At $100 depth: ~1.5 cents extra; at $5000: ~0.1 cents
-    if depth_usd > 0:
-        depth_slip = 0.015 * math.exp(-depth_usd / 500)
-    else:
-        depth_slip = 0.005
-
-    # Staleness-based: older prices → more likely to have moved
-    # ~0.5 cents per 5 seconds of age
-    age_slip = min(0.03, price_age * 0.001)
-
-    total = base + depth_slip + age_slip
-
-    # Cap at 3 cents — beyond this you'd probably just not fill
-    return min(total, 0.03)
+    # NOTE: _simulate_slippage() removed — slippage is handled by the VWAP
+    # calculation in engine.py which walks the real orderbook levels.

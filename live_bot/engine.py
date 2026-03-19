@@ -1020,26 +1020,10 @@ class ArbEngine:
         )
 
         if SIMULATION_MODE:
-            # Realistic fill simulation
-            filled, slippage = simulate_value_fill(
+            # Fill simulation — slippage is already in the VWAP price from the engine
+            filled, _slippage = simulate_value_fill(
                 market_price, depth_usd, price_age, platform
             )
-            if filled and slippage > 0:
-                actual_price = market_price + slippage
-                # Recalculate edge with slippage
-                actual_edge = (pin_prob / actual_price) - 1.0
-                if actual_edge <= 0:
-                    # Slippage wiped out the edge entirely — no longer a +EV bet
-                    logger.info(
-                        "   ↳ Slippage killed edge: %.0f¢ + %.1f¢ slip → edge %.1f%% (negative)",
-                        market_price * 100, slippage * 100, actual_edge * 100,
-                    )
-                    filled = False
-                else:
-                    # Edge reduced but still positive — real money market orders
-                    # accept minor slippage as cost of doing business.
-                    market_price = actual_price
-                    edge = actual_edge
             if not filled:
                 logger.info("   ↳ Value bet missed fill (depth=$%.0f, age=%.1fs)", depth_usd, price_age)
         else:
