@@ -258,7 +258,6 @@ tr:hover {{ background: rgba(88, 166, 255, 0.04); }}
 
 {trades_html}
 
-{_build_48h_shadow_section(portfolio)}
 
 </body>
 </html>"""
@@ -466,57 +465,6 @@ def _fmt_duration(seconds: float) -> str:
     m = (s % 3600) // 60
     return f"{h}h {m}m"
 
-
-def _build_48h_shadow_section(portfolio) -> str:
-    """Show 48h early bet research — entry edge vs 1h-before-start edge."""
-    bets = getattr(portfolio, "early_48h_bets", [])
-    if not bets:
-        return ""
-
-    # Get price cache for live edge computation
-    price_cache = getattr(portfolio, "_price_cache", {})
-
-    rows = ""
-    for b in bets[-20:]:  # last 20
-        team = b.get("team", "?")[:25]
-        sport = b.get("sport", "?")
-        platform = b.get("platform", "?")
-        entry_edge = b.get("edge_pct", 0)
-        hours = b.get("hours_until", 0)
-        pin_prob = b.get("pin_prob", 0)
-        pre_edge = b.get("pre_match_edge_pct")
-
-        if pre_edge is not None:
-            # Settled: show final 1h-before-start edge
-            edge_diff = pre_edge - entry_edge
-            diff_class = "positive" if edge_diff >= 0 else "negative"
-            now_col = f"<td>{pre_edge:+.1f}%</td><td class='{diff_class}'>{edge_diff:+.1f}pp</td>"
-        else:
-            # Live: compute current edge from cached price
-            mid = b.get("market_id", "")
-            plat_cache = price_cache.get(platform, {})
-            cached = plat_cache.get(mid, {})
-            current_ask = cached.get("best_ask", 0)
-
-            if current_ask > 0 and pin_prob > 0:
-                live_edge = (pin_prob / current_ask - 1) * 100
-                edge_diff = live_edge - entry_edge
-                diff_class = "positive" if edge_diff >= 0 else "negative"
-                now_col = f"<td>{live_edge:+.1f}%</td><td class='{diff_class}'>{edge_diff:+.1f}pp</td>"
-            else:
-                now_col = "<td style='color:#8b949e'>no data</td><td>—</td>"
-
-        rows += f"<tr><td>{team}</td><td>{sport}</td><td>{platform}</td><td>{entry_edge:.1f}%</td><td>{hours:.0f}h</td>{now_col}</tr>\n"
-
-    return f"""
-<div class="card" style="margin-top:16px">
-<h2 style="margin-bottom:12px">48h Research (passed all guards, logged 24-48h before start)</h2>
-<table>
-<tr><th>Team</th><th>Sport</th><th>Platform</th><th>Entry Edge</th><th>Hours Out</th><th>Current Edge</th><th>Change</th></tr>
-{rows}
-</table>
-<p style="color:#8b949e;margin-top:8px;font-size:12px">{len(bets)} total entries &middot; Updates live until locked at 1h before start</p>
-</div>"""
 
 
 def _esc(text: str) -> str:

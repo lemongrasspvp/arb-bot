@@ -84,10 +84,6 @@ class PaperPortfolio:
     midgame_value_count: int = 0
     midgame_value_pnl: float = 0.0
 
-    # Shadow simulation: 48h early bets (would we profit betting 24-48h out?)
-    # Logged when edge > 8% and match is 24-48h away. Settled when match resolves.
-    early_48h_bets: list = field(default_factory=list)
-
     # Shadow simulation: maker orders (what if we used limit orders?)
     maker_arb_count: int = 0
     maker_arb_pnl: float = 0.0
