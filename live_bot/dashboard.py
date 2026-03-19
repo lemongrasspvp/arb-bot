@@ -8,6 +8,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from live_bot.config import DASHBOARD_PORT, TRADE_LOG_PATH, SIMULATION_MODE
+from live_bot.feeds.pinnacle_poll import pinnacle_health
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,34 @@ def _render_html(portfolio) -> str:
 
     # Shadow sims
     shadow_html = _build_shadow_section(portfolio)
+
+    # Pinnacle health
+    pin_status = pinnacle_health["status"]
+    pin_last_ok = pinnacle_health["last_success"]
+    pin_ago = _fmt_duration(time.time() - pin_last_ok) if pin_last_ok > 0 else "never"
+    pin_errors = pinnacle_health["consecutive_errors"]
+    pin_outcomes = pinnacle_health["last_outcome_count"]
+
+    if pin_status == "ok":
+        pin_color = "#4caf50"
+        pin_icon = "OK"
+        pin_detail = f"{pin_outcomes} outcomes &middot; {pin_ago} ago"
+    elif pin_status == "rate_limited":
+        pin_color = "#ffd54f"
+        pin_icon = "RATE LIMITED"
+        pin_detail = f"{pin_errors} consecutive errors"
+    elif pin_status == "blocked":
+        pin_color = "#ef5350"
+        pin_icon = "BLOCKED"
+        pin_detail = f"{pin_errors} consecutive errors &middot; last ok {pin_ago}"
+    elif pin_status == "error":
+        pin_color = "#ff9800"
+        pin_icon = "ERROR"
+        pin_detail = f"{pin_errors} errors &middot; last ok {pin_ago}"
+    else:
+        pin_color = "#8b949e"
+        pin_icon = "STARTING"
+        pin_detail = "Waiting for first poll..."
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -222,6 +251,11 @@ tr:hover {{ background: rgba(88, 166, 255, 0.04); }}
         <div class="card-label">Open Positions</div>
         <div class="card-value">{len(portfolio.positions)}</div>
         <div class="meta">{portfolio.arb_count + portfolio.value_count} total trades</div>
+    </div>
+    <div class="card" style="border-left-color: {pin_color}">
+        <div class="card-label">Pinnacle API</div>
+        <div class="card-value" style="color: {pin_color}; font-size: 18px">{pin_icon}</div>
+        <div class="meta">{pin_detail}</div>
     </div>
 </div>
 
