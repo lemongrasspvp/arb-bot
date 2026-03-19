@@ -792,6 +792,8 @@ class ArbEngine:
                 return
 
         # ── Timing guards: skip matches too far away or likely over ──
+        shadow_48h = False
+        shadow_hours = 0.0
         if match.commence_time:
             try:
                 ct = match.commence_time
@@ -803,10 +805,12 @@ class ArbEngine:
 
                 # Too far in the future — odds will shift, not worth betting yet
                 if hours_until > MAX_PREGAME_HOURS:
-                    # Shadow: track 24-48h bets for research
-                    if hours_until <= 48 and match.pinnacle_prob_a > 0:
-                        self._shadow_48h_bet(match, hours_until)
-                    return
+                    if hours_until <= 48:
+                        # Let it continue through the full pipeline as a 48h shadow
+                        shadow_48h = True
+                        shadow_hours = hours_until
+                    else:
+                        return
 
                 # Match likely over — commence + duration exceeded
                 if hours_until < 0 and abs(hours_until) > MAX_MATCH_DURATION_HOURS:
@@ -1020,6 +1024,36 @@ class ArbEngine:
                 depth_usd = max(depth_usd, 2000.0)
             price_age = now - cached.get("timestamp", now)
 
+            # ── 48h shadow: log instead of executing ──
+            if shadow_48h:
+                bet_key = f"{match.match_id}_{team_side}_{platform}"
+                existing = [b for b in self.portfolio.early_48h_bets if b.get("key") == bet_key]
+                if not existing:
+                    entry = {
+                        "key": bet_key,
+                        "match_id": match.match_id,
+                        "team": team_name,
+                        "sport": match.sport,
+                        "platform": platform,
+                        "market_id": market_id,
+                        "pin_prob": round(pin_prob, 4),
+                        "entry_ask": round(effective_price, 4),
+                        "edge_pct": round(edge * 100, 1),
+                        "size_usd": round(size, 2),
+                        "hours_until": round(shadow_hours, 1),
+                        "timestamp": time.time(),
+                        "commence_time": match.commence_time,
+                        "pre_match_edge_pct": None,
+                        "pre_match_ask": None,
+                    }
+                    self.portfolio.early_48h_bets.append(entry)
+                    logger.info(
+                        "SHADOW 48h BET: %s %s — pin=%.0f¢ ask=%.0f¢ edge=%.1f%% size=$%.0f hours=%.0fh",
+                        team_name, platform, pin_prob * 100, effective_price * 100,
+                        edge * 100, size, shadow_hours,
+                    )
+                continue
+
             # Execute (pass effective_price which includes VWAP + fees)
             await self._execute_value(
                 match, platform, market_id, team_name, effective_price,
@@ -1071,67 +1105,6 @@ class ArbEngine:
                 bet["team"], bet["edge_pct"], current_edge * 100,
                 bet["entry_ask"] * 100, ask * 100, hours_left,
             )
-
-    def _shadow_48h_bet(self, match: TrackedMatch, hours_until: float) -> None:
-        """Shadow-log a potential 24-48h bet for research.
-
-        Records what the edge looks like now. When the match settles,
-        we compare entry price vs result to measure if 48h bets are profitable.
-        """
-        # Check both sides for edges > 8%
-        for side, pin_prob, token_id, ticker in [
-            ("a", match.pinnacle_prob_a, match.poly_token_id_a, match.kalshi_ticker_a),
-            ("b", match.pinnacle_prob_b, match.poly_token_id_b, match.kalshi_ticker_b),
-        ]:
-            if pin_prob <= 0:
-                continue
-
-            # Find best market price
-            for platform, mid in [("polymarket", token_id), ("kalshi", ticker)]:
-                if not mid:
-                    continue
-                cached = self.prices[platform].get(mid, {})
-                ask = cached.get("best_ask", 0)
-                if ask <= 0:
-                    continue
-
-                edge = (pin_prob / ask) - 1.0
-                if edge < 0.08 or edge > 0.20:  # 8-20% range only (>20% = likely stale/bad match)
-                    continue
-
-                # Same divergence check as regular pipeline
-                divergence = abs(pin_prob - ask) * 100
-                if divergence > MAX_PRICE_DIVERGENCE_PCT:
-                    continue
-
-                # Deduplicate: one entry per match/side/platform
-                bet_key = f"{match.match_id}_{side}_{platform}"
-                existing = [b for b in self.portfolio.early_48h_bets if b.get("key") == bet_key]
-                if existing:
-                    continue
-
-                entry = {
-                    "key": bet_key,
-                    "match_id": match.match_id,
-                    "team": match.teams[0] if side == "a" else match.teams[1],
-                    "sport": match.sport,
-                    "platform": platform,
-                    "market_id": mid,
-                    "pin_prob": round(pin_prob, 4),
-                    "entry_ask": round(ask, 4),
-                    "edge_pct": round(edge * 100, 1),
-                    "hours_until": round(hours_until, 1),
-                    "timestamp": time.time(),
-                    "commence_time": match.commence_time,
-                    "settled": False,
-                    "result": None,  # filled in when match settles
-                }
-                self.portfolio.early_48h_bets.append(entry)
-                logger.info(
-                    "SHADOW 48h: %s %s — pin=%.0f¢ ask=%.0f¢ edge=%.1f%% hours=%.0fh",
-                    entry["team"], platform, pin_prob * 100, ask * 100,
-                    edge * 100, hours_until,
-                )
 
     async def _execute_value(
         self, match, platform, market_id, team_name,
