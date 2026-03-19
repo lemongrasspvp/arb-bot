@@ -148,10 +148,6 @@ async def _check_poly_resolution(pos, registry) -> bool | None:
 
         market = data[0]
 
-        if not market.get("closed", False):
-            logger.info("Market not closed yet for %s (team=%s, closed=%s)", token_id[:30], pos.team, market.get("closed"))
-            return None
-
         # Parse outcome prices and token IDs
         try:
             prices = _json.loads(market.get("outcomePrices", "[]"))
@@ -161,20 +157,46 @@ async def _check_poly_resolution(pos, registry) -> bool | None:
             return None
 
         if not prices or not clob_tokens:
-            logger.warning("Empty prices/tokens for closed market, token %s", token_id[:30])
+            logger.warning("Empty prices/tokens for token %s", token_id[:30])
             return None
 
-        # Match our token_id to find its settlement price
+        is_closed = market.get("closed", False)
+        pos_age_hours = (time.time() - pos.opened_at) / 3600
+
+        # Match our token_id to find its settlement/current price
         for tid, price in zip(clob_tokens, prices):
             if tid == token_id:
                 settlement_price = float(price)
-                # 1.0 = won, 0.0 = lost
-                if settlement_price >= 0.99:
-                    return True
-                elif settlement_price <= 0.01:
-                    return False
-                # Price between 0.01 and 0.99 means not yet resolved
-                logger.info("Token %s has price %.2f — not yet resolved", token_id[:30], settlement_price)
+
+                if is_closed:
+                    # Officially closed — use exact settlement
+                    if settlement_price >= 0.99:
+                        return True
+                    elif settlement_price <= 0.01:
+                        return False
+                    logger.info("Token %s closed but price %.2f — ambiguous", token_id[:30], settlement_price)
+                    return None
+
+                # Not officially closed — use price-based fallback
+                # Only if position is >4h old (avoid premature settlement)
+                if pos_age_hours >= 4:
+                    if settlement_price >= 0.95:
+                        logger.info(
+                            "Price-based settlement: %s (team=%s) price=%.2f → WON (age=%.1fh)",
+                            token_id[:30], pos.team, settlement_price, pos_age_hours,
+                        )
+                        return True
+                    elif settlement_price <= 0.05:
+                        logger.info(
+                            "Price-based settlement: %s (team=%s) price=%.2f → LOST (age=%.1fh)",
+                            token_id[:30], pos.team, settlement_price, pos_age_hours,
+                        )
+                        return False
+
+                logger.info(
+                    "Market not closed for %s (team=%s, price=%.2f, age=%.1fh)",
+                    token_id[:30], pos.team, settlement_price, pos_age_hours,
+                )
                 return None
 
         # Token not found — log full details for debugging
