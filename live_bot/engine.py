@@ -1028,13 +1028,16 @@ class ArbEngine:
                 actual_price = market_price + slippage
                 # Recalculate edge with slippage
                 actual_edge = (pin_prob / actual_price) - 1.0
-                if actual_edge < MIN_VALUE_EDGE_PCT / 100:
+                if actual_edge <= 0:
+                    # Slippage wiped out the edge entirely — no longer a +EV bet
                     logger.info(
-                        "   ↳ Slippage killed edge: %.0f¢ + %.1f¢ slip → edge %.1f%% (below min)",
+                        "   ↳ Slippage killed edge: %.0f¢ + %.1f¢ slip → edge %.1f%% (negative)",
                         market_price * 100, slippage * 100, actual_edge * 100,
                     )
                     filled = False
                 else:
+                    # Edge reduced but still positive — real money market orders
+                    # accept minor slippage as cost of doing business.
                     market_price = actual_price
                     edge = actual_edge
             if not filled:
