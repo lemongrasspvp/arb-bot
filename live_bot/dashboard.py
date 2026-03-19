@@ -258,6 +258,8 @@ tr:hover {{ background: rgba(88, 166, 255, 0.04); }}
 
 {trades_html}
 
+{_build_48h_shadow_section(portfolio)}
+
 </body>
 </html>"""
 
@@ -463,6 +465,42 @@ def _fmt_duration(seconds: float) -> str:
     h = s // 3600
     m = (s % 3600) // 60
     return f"{h}h {m}m"
+
+
+def _build_48h_shadow_section(portfolio) -> str:
+    """Show 48h early bet research — entry edge vs 1h-before-start edge."""
+    bets = getattr(portfolio, "early_48h_bets", [])
+    if not bets:
+        return ""
+
+    rows = ""
+    for b in bets[-20:]:  # last 20
+        team = b.get("team", "?")[:25]
+        sport = b.get("sport", "?")
+        platform = b.get("platform", "?")
+        entry_edge = b.get("edge_pct", 0)
+        hours = b.get("hours_until", 0)
+        pre_edge = b.get("pre_match_edge_pct")
+        pre_ask = b.get("pre_match_ask")
+
+        if pre_edge is not None:
+            edge_diff = pre_edge - entry_edge
+            diff_class = "positive" if edge_diff >= 0 else "negative"
+            pre_col = f"<td class='{diff_class}'>{pre_edge:+.1f}%</td><td class='{diff_class}'>{edge_diff:+.1f}pp</td>"
+        else:
+            pre_col = "<td style='color:#8b949e'>pending</td><td>—</td>"
+
+        rows += f"<tr><td>{team}</td><td>{sport}</td><td>{platform}</td><td>{entry_edge:.1f}%</td><td>{hours:.0f}h</td>{pre_col}</tr>\n"
+
+    return f"""
+<div class="card" style="margin-top:16px">
+<h2 style="margin-bottom:12px">48h Research (edges &gt;8%, logged 24-48h before start)</h2>
+<table>
+<tr><th>Team</th><th>Sport</th><th>Platform</th><th>Entry Edge</th><th>Hours Out</th><th>Edge @1h</th><th>Change</th></tr>
+{rows}
+</table>
+<p style="color:#8b949e;margin-top:8px;font-size:12px">{len(bets)} total entries &middot; "Edge @1h" = edge 1 hour before match start</p>
+</div>"""
 
 
 def _esc(text: str) -> str:
