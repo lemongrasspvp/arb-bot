@@ -119,10 +119,10 @@ async def _check_resolution(pos, registry) -> bool | None:
 
 
 async def _check_poly_resolution(pos, registry) -> bool | None:
-    """Check Polymarket market resolution via CLOB API.
+    """Check Polymarket market resolution via Gamma API.
 
-    Queries by token_id (always available on the position) so settlement
-    works even if condition_id is lost after a restart.
+    Queries by token_id (always available on the position).
+    Uses outcomePrices to determine winner: "1" = won, "0" = lost.
     """
     token_id = pos.market_id
     if not token_id:
@@ -131,41 +131,50 @@ async def _check_poly_resolution(pos, registry) -> bool | None:
     try:
         resp = await asyncio.to_thread(
             requests.get,
-            f"{POLY_CLOB_BASE}/markets",
-            params={"token_id": token_id},
+            "https://gamma-api.polymarket.com/markets",
+            params={"clob_token_ids": token_id},
             timeout=10,
         )
         if resp.status_code != 200:
             return None
 
-        payload = resp.json()
-        # Response is {"data": [market_dict, ...]}
-        markets = payload.get("data", []) if isinstance(payload, dict) else payload
-        if not markets:
+        data = resp.json()
+        if not data:
             return None
 
-        market = markets[0] if isinstance(markets, list) else markets
+        market = data[0]
 
         if not market.get("closed", False):
             return None
 
-        # Check our token in the tokens list
-        tokens = market.get("tokens", [])
-        for token in tokens:
-            if token.get("token_id") == token_id:
-                return token.get("winner", False)
+        # Parse outcome prices and token IDs
+        import json as _json
+        try:
+            prices = _json.loads(market.get("outcomePrices", "[]"))
+            clob_tokens = _json.loads(market.get("clobTokenIds", "[]"))
+        except (ValueError, TypeError):
+            return None
 
-        # Fallback: single-token market — if closed, check accepting_orders
-        # If market is closed and not accepting orders, check outcome
-        if market.get("closed") and not market.get("accepting_orders"):
-            # Market resolved but we couldn't find our token in the list
-            # This can happen if the API returns a different format
-            logger.warning("Poly market closed but token %s not found in tokens list", token_id[:20])
+        if not prices or not clob_tokens:
+            return None
 
+        # Match our token_id to find its settlement price
+        for tid, price in zip(clob_tokens, prices):
+            if tid == token_id:
+                settlement_price = float(price)
+                # 1.0 = won, 0.0 = lost
+                if settlement_price >= 0.99:
+                    return True
+                elif settlement_price <= 0.01:
+                    return False
+                # Price between 0.01 and 0.99 means not yet resolved
+                return None
+
+        logger.warning("Poly token %s not found in clobTokenIds", token_id[:30])
         return None
 
     except Exception:
-        logger.debug("Error checking Poly resolution for token %s", token_id[:20])
+        logger.debug("Error checking Poly resolution for token %s", token_id[:30])
         return None
 
 
