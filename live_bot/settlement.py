@@ -124,6 +124,8 @@ async def _check_poly_resolution(pos, registry) -> bool | None:
     Queries by token_id (always available on the position).
     Uses outcomePrices to determine winner: "1" = won, "0" = lost.
     """
+    import json as _json
+
     token_id = pos.market_id
     if not token_id:
         return None
@@ -136,10 +138,12 @@ async def _check_poly_resolution(pos, registry) -> bool | None:
             timeout=10,
         )
         if resp.status_code != 200:
+            logger.warning("Gamma API returned %d for token %s", resp.status_code, token_id[:30])
             return None
 
         data = resp.json()
         if not data:
+            logger.debug("Gamma API returned empty for token %s (team=%s)", token_id[:30], pos.team)
             return None
 
         market = data[0]
@@ -148,14 +152,15 @@ async def _check_poly_resolution(pos, registry) -> bool | None:
             return None
 
         # Parse outcome prices and token IDs
-        import json as _json
         try:
             prices = _json.loads(market.get("outcomePrices", "[]"))
             clob_tokens = _json.loads(market.get("clobTokenIds", "[]"))
         except (ValueError, TypeError):
+            logger.warning("Failed to parse outcomePrices/clobTokenIds for token %s", token_id[:30])
             return None
 
         if not prices or not clob_tokens:
+            logger.warning("Empty prices/tokens for closed market, token %s", token_id[:30])
             return None
 
         # Match our token_id to find its settlement price
@@ -168,13 +173,19 @@ async def _check_poly_resolution(pos, registry) -> bool | None:
                 elif settlement_price <= 0.01:
                     return False
                 # Price between 0.01 and 0.99 means not yet resolved
+                logger.debug("Token %s has price %.2f — not yet resolved", token_id[:30], settlement_price)
                 return None
 
-        logger.warning("Poly token %s not found in clobTokenIds", token_id[:30])
+        # Token not found — log full details for debugging
+        logger.warning(
+            "Poly token %s not in clobTokenIds. Market question: %s, tokens: %s",
+            token_id[:40], market.get("question", "?")[:60],
+            [t[:30] for t in clob_tokens],
+        )
         return None
 
     except Exception:
-        logger.debug("Error checking Poly resolution for token %s", token_id[:30])
+        logger.exception("Error checking Poly resolution for token %s", token_id[:30])
         return None
 
 
