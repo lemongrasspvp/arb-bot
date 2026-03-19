@@ -893,6 +893,11 @@ class ArbEngine:
             if edge < min_edge:
                 continue
 
+            logger.info(
+                "Value edge found: %s %s pin=%.0f¢ mkt=%.0f¢ edge=%.1f%%",
+                team_name, platform, pin_prob * 100, effective_price * 100, edge * 100,
+            )
+
             # Sanity cap: edges above 20% are almost certainly stale refs or bad matches
             if edge > MAX_VALUE_EDGE_PCT / 100:
                 logger.debug(
@@ -917,7 +922,7 @@ class ArbEngine:
                     "first_seen": now,
                     "last_edge": edge,
                 }
-                logger.debug(
+                logger.info(
                     "Value persistence [new]: %s %s edge=%.1f%% — waiting %.0fs",
                     team_name, platform, edge * 100, MIN_PERSISTENCE_SECONDS,
                 )
