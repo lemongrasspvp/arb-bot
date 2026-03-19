@@ -154,7 +154,8 @@ class MarketRegistry:
 
             norm_a = _normalize(match.teams[0])
             norm_b = _normalize(match.teams[1])
-            if fuzz.token_sort_ratio(norm, norm_a) > 75:
+            # Threshold 85 prevents partial name collisions like "FURIA" matching "FURIA fe"
+            if fuzz.token_sort_ratio(norm, norm_a) > 85:
                 match.pinnacle_last_seen_a = now  # always update: we got data
                 # Freeze detection: same odds as last poll = likely suspended
                 if match._prev_pinnacle_prob_a > 0 and abs(no_vig_prob - match._prev_pinnacle_prob_a) < 0.001:
@@ -168,7 +169,7 @@ class MarketRegistry:
                     match.pinnacle_moving_a = shift > 0.03
                 match._prev_pinnacle_prob_a = match.pinnacle_prob_a
                 match.pinnacle_prob_a = no_vig_prob
-            elif fuzz.token_sort_ratio(norm, norm_b) > 75:
+            elif fuzz.token_sort_ratio(norm, norm_b) > 85:
                 match.pinnacle_last_seen_b = now  # always update: we got data
                 if match._prev_pinnacle_prob_b > 0 and abs(no_vig_prob - match._prev_pinnacle_prob_b) < 0.001:
                     match.pinnacle_frozen_b = True
