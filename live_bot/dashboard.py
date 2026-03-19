@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -18,6 +19,9 @@ CET = timezone(timedelta(hours=1))
 _start_time = time.time()
 
 
+DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
+
+
 async def dashboard_server(portfolio, shutdown_event: asyncio.Event) -> None:
     """Run a tiny HTTP server that serves the dashboard page."""
 
@@ -25,11 +29,42 @@ async def dashboard_server(portfolio, shutdown_event: asyncio.Event) -> None:
         try:
             # Read request line
             request_line = await asyncio.wait_for(reader.readline(), timeout=5)
-            # Drain headers
+            # Read headers
+            headers_raw = {}
             while True:
                 line = await asyncio.wait_for(reader.readline(), timeout=5)
                 if line == b"\r\n" or line == b"\n" or not line:
                     break
+                decoded = line.decode("utf-8", errors="ignore").strip()
+                if ":" in decoded:
+                    k, v = decoded.split(":", 1)
+                    headers_raw[k.strip().lower()] = v.strip()
+
+            # Basic auth check (if DASHBOARD_PASSWORD is set)
+            if DASHBOARD_PASSWORD:
+                import base64
+                auth = headers_raw.get("authorization", "")
+                authorized = False
+                if auth.startswith("Basic "):
+                    try:
+                        decoded_auth = base64.b64decode(auth[6:]).decode("utf-8")
+                        # Accept any username, just check password
+                        if ":" in decoded_auth:
+                            _, pwd = decoded_auth.split(":", 1)
+                            authorized = (pwd == DASHBOARD_PASSWORD)
+                    except Exception:
+                        pass
+                if not authorized:
+                    resp = (
+                        "HTTP/1.1 401 Unauthorized\r\n"
+                        'WWW-Authenticate: Basic realm="Dashboard"\r\n'
+                        "Content-Length: 0\r\n"
+                        "Connection: close\r\n"
+                        "\r\n"
+                    )
+                    writer.write(resp.encode("utf-8"))
+                    await writer.drain()
+                    return
 
             html = _render_html(portfolio)
             body = html.encode("utf-8")
