@@ -901,45 +901,41 @@ class ArbEngine:
                 )
                 continue
 
-            # --- Edge persistence check ---
-            # Require the edge to be seen on N consecutive checks before betting.
+            # --- Edge persistence check (time-based) ---
+            # Edge must exist for at least 3 seconds before we bet.
             # Filters out momentary glitches and stale-reference false positives.
+            # Executes as soon as 3s passes — doesn't wait for next Pinnacle poll.
+            MIN_PERSISTENCE_SECONDS = 3.0
+
             val_key = f"{match.match_id}_{team_side}_{platform}"
             now = time.time()
             persistence = self._edge_persistence.get(val_key)
 
             if persistence is None:
-                # First sighting — record and wait
+                # First sighting — start the timer
                 self._edge_persistence[val_key] = {
-                    "count": 1,
                     "first_seen": now,
                     "last_edge": edge,
                 }
                 logger.debug(
-                    "Value persistence [1/%d]: %s %s edge=%.1f%%",
-                    VALUE_EDGE_PERSISTENCE, team_name, platform, edge * 100,
+                    "Value persistence [new]: %s %s edge=%.1f%% — waiting %.0fs",
+                    team_name, platform, edge * 100, MIN_PERSISTENCE_SECONDS,
                 )
                 continue
             else:
-                # Check if previous sighting was recent enough (within 90s)
-                if now - persistence["first_seen"] > 90:
-                    # Too old — reset
+                age = now - persistence["first_seen"]
+                # Too old (>90s) — edge disappeared and came back, reset
+                if age > 90:
                     self._edge_persistence[val_key] = {
-                        "count": 1,
                         "first_seen": now,
                         "last_edge": edge,
                     }
                     continue
-                else:
-                    persistence["count"] += 1
-                    persistence["last_edge"] = edge
 
-                if persistence["count"] < VALUE_EDGE_PERSISTENCE:
-                    logger.debug(
-                        "Value persistence [%d/%d]: %s %s edge=%.1f%%",
-                        persistence["count"], VALUE_EDGE_PERSISTENCE,
-                        team_name, platform, edge * 100,
-                    )
+                persistence["last_edge"] = edge
+
+                # Not enough time elapsed yet
+                if age < MIN_PERSISTENCE_SECONDS:
                     continue
 
             # Edge persisted! Clear persistence tracker
