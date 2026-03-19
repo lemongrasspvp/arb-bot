@@ -173,6 +173,11 @@ def fetch_odds() -> list[PinnacleOutcome]:
                 if mu.get("isLive"):
                     continue
 
+                # Skip special markets (player props, futures like "To Reach Sweet 16")
+                # These have Yes/No or Over/Under as participant names, not team names.
+                if mu.get("type") == "special" or mu.get("special"):
+                    continue
+
                 # Skip games starting within 5 minutes
                 start_str = mu.get("startTime", "")
                 if start_str:

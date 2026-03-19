@@ -67,8 +67,22 @@ def _normalize(text: str) -> str:
 
 
 def _team_score(name_a: str, name_b: str) -> float:
-    """Score how well two team names match (0–100)."""
-    return fuzz.token_sort_ratio(_normalize(name_a), _normalize(name_b))
+    """Score how well two team names match (0–100).
+
+    Uses token_sort_ratio as primary metric. Falls back to token_set_ratio
+    (which handles subset matching like "Bradley" vs "Bradley Braves") but
+    discounts it slightly to avoid false positives.
+    """
+    na, nb = _normalize(name_a), _normalize(name_b)
+    sort_score = fuzz.token_sort_ratio(na, nb)
+    if sort_score >= 75:
+        return sort_score
+
+    # Subset matching: "Bradley" ⊂ "Bradley Braves" → token_set_ratio = 100
+    # Discount by 15% to penalize partial matches (so 100 → 85, still above 75 threshold).
+    # This catches college team + mascot mismatches without false positives.
+    set_score = fuzz.token_set_ratio(na, nb) * 0.85
+    return max(sort_score, set_score)
 
 
 def _group_by_event(outcomes: list[MarketOutcome]) -> dict[str, list[MarketOutcome]]:
