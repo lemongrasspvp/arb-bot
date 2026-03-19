@@ -852,6 +852,20 @@ class ArbEngine:
                                match.teams[1], match.pinnacle_prob_b))
 
         for team_side, platform, market_id, team_name, pin_prob in checks:
+            # One-time full diagnostic for high-edge matches
+            if pin_prob > 0.40 and platform == "polymarket":
+                cached_diag = self.prices[platform].get(market_id, {})
+                ask_diag = cached_diag.get("best_ask", 0)
+                if ask_diag > 0 and (pin_prob / ask_diag - 1) > 0.10:
+                    moving = match.pinnacle_moving_a if team_side == "a" else match.pinnacle_moving_b
+                    last_seen = match.pinnacle_last_seen_a if team_side == "a" else match.pinnacle_last_seen_b
+                    logger.info(
+                        "DIAG loop: %s %s ask=%.0f¢ moving=%s last_seen=%.0f frozen=%s",
+                        team_name, platform, ask_diag * 100, moving,
+                        time.time() - last_seen if last_seen > 0 else -1,
+                        match.pinnacle_frozen_a if team_side == "a" else match.pinnacle_frozen_b,
+                    )
+
             # Skip if Pinnacle odds are frozen (suspended line during live play)
             if timing == "midgame":
                 frozen = match.pinnacle_frozen_a if team_side == "a" else match.pinnacle_frozen_b
@@ -890,10 +904,12 @@ class ArbEngine:
             cached = self.prices[platform].get(market_id, {})
             market_ask = cached.get("best_ask", 0)
             if market_ask <= 0:
-                logger.info(
-                    "Value skip (no cached price): %s %s market_id=%s",
-                    team_name, platform, market_id[:30],
-                )
+                # Only log for matches with significant Pinnacle prob
+                if pin_prob > 0.10:
+                    logger.info(
+                        "Value skip (no cached price): %s %s market_id=%s",
+                        team_name, platform, market_id[:30],
+                    )
                 continue
 
             # --- VWAP-based cost calculation ---
