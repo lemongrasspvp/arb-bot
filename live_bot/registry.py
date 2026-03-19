@@ -113,6 +113,20 @@ class MarketRegistry:
                 return self.matches.get(match_id), ""
         return None, ""
 
+    @staticmethod
+    def _is_academy_mismatch(name_a: str, name_b: str) -> bool:
+        """Return True if one name is an academy/sub-roster variant of the other.
+
+        Catches: FURIA vs FURIA fe, paiN vs paiN Academy, etc.
+        """
+        _ACADEMY_SUFFIXES = {"fe", "academy", "acad", "junior", "jr",
+                             "rising", "youth", "prospects", "challengers"}
+        tokens_a = set(name_a.split())
+        tokens_b = set(name_b.split())
+        diff = tokens_a.symmetric_difference(tokens_b)
+        # If the only difference between names is an academy-type suffix, it's a mismatch
+        return len(diff) > 0 and diff.issubset(_ACADEMY_SUFFIXES)
+
     def update_pinnacle_price(
         self, team_name: str, sport: str, no_vig_prob: float,
         event_name: str = "",
@@ -154,6 +168,9 @@ class MarketRegistry:
 
             norm_a = _normalize(match.teams[0])
             norm_b = _normalize(match.teams[1])
+            # Skip if academy/sub-roster mismatch: "FURIA" should not update "FURIA fe"
+            if self._is_academy_mismatch(norm, norm_a) or self._is_academy_mismatch(norm, norm_b):
+                continue
             # Threshold 85 prevents partial name collisions like "FURIA" matching "FURIA fe"
             if fuzz.token_sort_ratio(norm, norm_a) > 85:
                 match.pinnacle_last_seen_a = now  # always update: we got data
