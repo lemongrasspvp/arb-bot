@@ -1028,7 +1028,8 @@ class ArbEngine:
 
             # ── 48h shadow: log instead of executing ──
             if shadow_48h:
-                bet_key = f"{match.match_id}_{team_side}_{platform}"
+                # Dedup by match + team only (not platform) — one entry per team per match
+                bet_key = f"{match.match_id}_{team_side}"
                 existing = [b for b in self.portfolio.early_48h_bets if b.get("key") == bet_key]
                 if not existing:
                     entry = {
