@@ -119,43 +119,53 @@ async def _check_resolution(pos, registry) -> bool | None:
 
 
 async def _check_poly_resolution(pos, registry) -> bool | None:
-    """Check Polymarket market resolution via CLOB API."""
-    # Find the condition_id for this position
-    condition_id = pos.condition_id
-    if not condition_id:
-        # Try to find it from the registry
-        condition_id = _find_condition_id(pos, registry)
-        if not condition_id:
-            logger.debug("No condition_id for Poly position %s", pos.market_id)
-            return None
+    """Check Polymarket market resolution via CLOB API.
+
+    Queries by token_id (always available on the position) so settlement
+    works even if condition_id is lost after a restart.
+    """
+    token_id = pos.market_id
+    if not token_id:
+        return None
 
     try:
         resp = await asyncio.to_thread(
             requests.get,
-            f"{POLY_CLOB_BASE}/markets/{condition_id}",
+            f"{POLY_CLOB_BASE}/markets",
+            params={"token_id": token_id},
             timeout=10,
         )
         if resp.status_code != 200:
             return None
 
-        data = resp.json()
-
-        # Market must be closed to have a resolution
-        if not data.get("closed", False):
+        payload = resp.json()
+        # Response is {"data": [market_dict, ...]}
+        markets = payload.get("data", []) if isinstance(payload, dict) else payload
+        if not markets:
             return None
 
-        # Check which token won
-        tokens = data.get("tokens", [])
+        market = markets[0] if isinstance(markets, list) else markets
+
+        if not market.get("closed", False):
+            return None
+
+        # Check our token in the tokens list
+        tokens = market.get("tokens", [])
         for token in tokens:
-            if token.get("token_id") == pos.market_id:
+            if token.get("token_id") == token_id:
                 return token.get("winner", False)
 
-        # If our token wasn't in the response, check by outcome name
-        # (fallback — shouldn't normally happen)
+        # Fallback: single-token market — if closed, check accepting_orders
+        # If market is closed and not accepting orders, check outcome
+        if market.get("closed") and not market.get("accepting_orders"):
+            # Market resolved but we couldn't find our token in the list
+            # This can happen if the API returns a different format
+            logger.warning("Poly market closed but token %s not found in tokens list", token_id[:20])
+
         return None
 
     except Exception:
-        logger.debug("Error checking Poly resolution for %s", condition_id)
+        logger.debug("Error checking Poly resolution for token %s", token_id[:20])
         return None
 
 
