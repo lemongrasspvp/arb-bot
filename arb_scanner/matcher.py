@@ -291,8 +291,10 @@ def classify_tier(pair: MatchedPair) -> str:
 
     Checks:
       1. Fuzzy confidence >= 85 (both teams matched well)
-      2. Start-time agreement: if both sides have commence_time, they must be
-         within 30 minutes of each other (catches cross-event false matches)
+      2. Start-time agreement: for confidence < 95, both sides' commence_time
+         must be within 2 hours (catches cross-event false matches).
+         High-confidence (≥95) matches skip this — platforms often disagree
+         on session vs match start times.
       3. Sport/league agreement: both sides must report the same sport
       4. No close alternative: ensure the best match is meaningfully better than
          the second-best (confidence gap >= 10). If two events score similarly,
@@ -304,10 +306,13 @@ def classify_tier(pair: MatchedPair) -> str:
     if pair.confidence < 85:
         reasons.append(f"low_confidence={pair.confidence:.0f}")
 
-    # Check 2: Start-time agreement (within 30 min)
+    # Check 2: Start-time agreement
+    # High-confidence matches (≥95) skip time check — platforms often disagree
+    # on session start vs match start (especially tennis, 18h gaps).
+    # Lower-confidence matches use a 2-hour window.
     ct_a = pair.source_a.commence_time
     ct_b = pair.source_b.commence_time
-    if ct_a and ct_b:
+    if ct_a and ct_b and pair.confidence < 95:
         try:
             from datetime import datetime
             def _parse_ct(ct: str) -> datetime:
@@ -317,7 +322,7 @@ def classify_tier(pair: MatchedPair) -> str:
             dt_a = _parse_ct(ct_a)
             dt_b = _parse_ct(ct_b)
             diff_minutes = abs((dt_a - dt_b).total_seconds()) / 60
-            if diff_minutes > 30:
+            if diff_minutes > 120:
                 reasons.append(f"start_time_gap={diff_minutes:.0f}min")
         except (ValueError, TypeError):
             pass  # can't parse — don't penalize

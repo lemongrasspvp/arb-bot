@@ -123,6 +123,11 @@ def _render_html(portfolio) -> str:
     # Strategy breakdown
     strategy_html = _build_strategy_table(portfolio)
 
+    # CLV stats from settlements
+    clv_values = [s.get("clv", 0) for s in settlement_entries if s.get("clv") is not None and s.get("clv") != 0]
+    avg_clv = sum(clv_values) / len(clv_values) if clv_values else 0.0
+    clv_count = len(clv_values)
+
     # Pinnacle health
     pin_status = pinnacle_health["status"]
     pin_last_ok = pinnacle_health["last_success"]
@@ -269,9 +274,10 @@ tr:hover {{ background: rgba(88, 166, 255, 0.04); }}
         <div class="card-value {'positive' if portfolio.total_pnl >= 0 else 'negative'}">${portfolio.total_pnl:+.2f}</div>
         <div class="meta">{portfolio.total_pnl / portfolio.total_portfolio_value * 100 if portfolio.total_portfolio_value > 0 else 0:+.1f}% return</div>
     </div>
-    <div class="card {'green' if portfolio.daily_pnl >= 0 else 'red'}">
-        <div class="card-label">Daily P&amp;L</div>
-        <div class="card-value {'positive' if portfolio.daily_pnl >= 0 else 'negative'}">${portfolio.daily_pnl:+.2f}</div>
+    <div class="card {'green' if avg_clv >= 0 else 'red'}">
+        <div class="card-label">Avg CLV</div>
+        <div class="card-value {'positive' if avg_clv >= 0 else 'negative'}">{avg_clv * 100:+.1f}¢</div>
+        <div class="meta">{clv_count} settled</div>
     </div>
     <div class="card yellow">
         <div class="card-label">Open Positions</div>
