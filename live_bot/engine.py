@@ -767,6 +767,24 @@ class ArbEngine:
         if match.pinnacle_prob_a <= 0 and match.pinnacle_prob_b <= 0:
             return
 
+        # Diagnostic: log every check for high-edge matches (once per 30s max)
+        if match.pinnacle_prob_a > 0 and (match.poly_token_id_a or match.kalshi_ticker_a):
+            mid = match.poly_token_id_a or match.kalshi_ticker_a
+            cached = self.prices.get("polymarket", {}).get(mid) or self.prices.get("kalshi", {}).get(mid)
+            if cached and cached.get("best_ask", 0) > 0:
+                ask = cached["best_ask"]
+                edge_quick = (match.pinnacle_prob_a / ask) - 1.0
+                if edge_quick > 0.10:
+                    diag_key = f"diag_{match.match_id}_a"
+                    now = time.time()
+                    if now - self._recent_values.get(diag_key, 0) > 30:
+                        self._recent_values[diag_key] = now
+                        logger.info(
+                            "DIAG _check_value: %s pin=%.0f¢ ask=%.0f¢ edge=%.1f%% timing=%s",
+                            match.teams[0], match.pinnacle_prob_a * 100, ask * 100,
+                            edge_quick * 100, self._get_match_timing(match),
+                        )
+
         timing = self._get_match_timing(match)
 
         # Countermeasure 1: Skip midgame value bets entirely (unless allowed).
@@ -872,7 +890,7 @@ class ArbEngine:
             cached = self.prices[platform].get(market_id, {})
             market_ask = cached.get("best_ask", 0)
             if market_ask <= 0:
-                logger.debug(
+                logger.info(
                     "Value skip (no cached price): %s %s market_id=%s",
                     team_name, platform, market_id[:30],
                 )
