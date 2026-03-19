@@ -308,7 +308,8 @@ def build_registry_from_scanner() -> MarketRegistry:
 
             team_score = fuzz.token_sort_ratio(norm_team, pin_name)
             # Also check if the opponent appears in the event name
-            event_has_opponent = fuzz.token_sort_ratio(norm_opp, pin_event) > 50
+            # Use partial_ratio for substring matching (e.g. "Players" in "FOLHA AMARELA vs Players")
+            event_has_opponent = fuzz.partial_ratio(norm_opp, pin_event) > 50
 
             if team_score > 75 and event_has_opponent and team_score > best_score:
                 best_prob = info["prob"]
