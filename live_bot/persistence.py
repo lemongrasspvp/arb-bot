@@ -4,7 +4,7 @@ import json
 import logging
 from pathlib import Path
 
-from live_bot.config import POSITIONS_FILE_PATH
+from live_bot.config import POSITIONS_FILE_PATH, TRADE_LOG_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -113,3 +113,85 @@ def load_positions(portfolio) -> int:
     except Exception:
         logger.exception("Failed to load positions from %s", POSITIONS_FILE)
         return 0
+
+
+def backfill_counters(portfolio) -> int:
+    """Reconstruct filled trade counters from the JSONL trade log.
+
+    Only backfills if portfolio counters are zero (fresh deploy or missing
+    from old positions file). Skips if counters are already populated
+    to avoid double-counting.
+
+    Returns number of filled trades found.
+    """
+    # Don't backfill if counters are already populated (loaded from positions file)
+    if portfolio.value_filled_count > 0:
+        logger.info("Counters already populated (%d filled), skipping backfill",
+                     portfolio.value_filled_count)
+        return portfolio.value_filled_count
+
+    log_path = Path(TRADE_LOG_PATH)
+    if not log_path.exists():
+        return 0
+
+    try:
+        lines = log_path.read_text().strip().split("\n")
+    except OSError:
+        logger.exception("Failed to read trade log for backfill")
+        return 0
+
+    filled = 0
+    edge_sum = 0.0
+    value_count = 0
+    pregame_count = 0
+    midgame_count = 0
+
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        # Only count VALUE_BET entries (filled trades)
+        if entry.get("type") != "VALUE_BET":
+            continue
+        if entry.get("strategy") != "VALUE":
+            continue
+        if not entry.get("would_fill", False):
+            continue
+
+        filled += 1
+        edge_sum += entry.get("edge_pct", 0)
+
+        timing = entry.get("extra", {}).get("timing", "pregame") if isinstance(entry.get("extra"), dict) else "pregame"
+        if timing == "pregame":
+            pregame_count += 1
+        else:
+            midgame_count += 1
+
+    # Also count all VALUE attempts (filled + rejected)
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if entry.get("strategy") == "VALUE" and entry.get("type") in ("VALUE_BET", "VALUE_REJECTED"):
+            value_count += 1
+
+    if filled > 0:
+        portfolio.value_filled_count = filled
+        portfolio.value_edge_sum = edge_sum
+        portfolio.value_count = value_count
+        portfolio.pregame_value_count = pregame_count
+        portfolio.midgame_value_count = midgame_count
+        avg = edge_sum / filled if filled else 0
+        logger.info(
+            "Backfilled from trade log: %d filled trades, %d total attempts, avg edge %.1f%%",
+            filled, value_count, avg,
+        )
+
+    return filled

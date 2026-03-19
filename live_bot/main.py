@@ -268,6 +268,13 @@ async def run_bot(live: bool = False) -> None:
         console.print(f"[green]Restored {loaded} open positions from disk[/green]")
         console.print(f"[dim]  Balance: ${portfolio.current_balance:.2f} | P&L: ${portfolio.total_pnl:.2f}[/dim]")
 
+    # Backfill counters from trade log if needed (handles deploys with old positions format)
+    from live_bot.persistence import backfill_counters
+    backfilled = backfill_counters(portfolio)
+    if backfilled:
+        avg_edge = portfolio.value_edge_sum / portfolio.value_filled_count if portfolio.value_filled_count else 0
+        console.print(f"[green]Backfilled {backfilled} filled trades from log (avg edge {avg_edge:.1f}%)[/green]")
+
     # Step 4: Initialize engine
     engine = ArbEngine(
         registry, poly_exec, kalshi_exec, portfolio,
