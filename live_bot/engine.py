@@ -183,6 +183,8 @@ class ArbEngine:
             "kalshi": {},
             "pinnacle": {},
         }
+        # Share price cache with portfolio so dashboard can compute live edges
+        portfolio._price_cache = self.prices
 
         # Track recent arbs to avoid re-triggering (match_id → timestamp)
         self._recent_arbs: dict[str, float] = {}
