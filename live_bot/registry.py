@@ -2,6 +2,7 @@
 
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 
 from rapidfuzz import fuzz
@@ -54,6 +55,9 @@ class MarketRegistry:
         self._poly_to_match: dict[str, tuple[str, str]] = {}   # token_id → (match_id, "a"|"b")
         self._kalshi_to_match: dict[str, tuple[str, str]] = {}  # ticker → (match_id, "a"|"b")
         self._pinnacle_to_match: dict[str, str] = {}            # key → match_id
+        # Initial ask prices from scanner — seed engine cache before WS sends updates
+        # market_id → {"best_ask": float, "timestamp": float}
+        self.initial_prices: dict[str, dict[str, dict]] = {"polymarket": {}, "kalshi": {}}
 
     @property
     def poly_token_ids(self) -> list[str]:
@@ -76,6 +80,15 @@ class MarketRegistry:
             if m.kalshi_ticker_b:
                 tickers.append(m.kalshi_ticker_b)
         return tickers
+
+    def seed_initial_price(self, platform: str, market_id: str, ask_price: float) -> None:
+        """Store an initial ask price from the scanner for engine cache seeding."""
+        if ask_price > 0 and market_id:
+            self.initial_prices[platform][market_id] = {
+                "best_ask": ask_price,
+                "best_bid": 0.0,
+                "timestamp": time.time(),
+            }
 
     def get_match_for_market(self, platform: str, market_id: str) -> tuple[TrackedMatch | None, str]:
         """Look up which TrackedMatch a given market belongs to.
@@ -364,6 +377,11 @@ def build_registry_from_scanner() -> MarketRegistry:
         )
 
         registry.matches[match_id] = match
+        # Seed initial prices from scanner
+        registry.seed_initial_price("polymarket", poly_a.token_id, poly_a.actual_price or poly_a.implied_prob)
+        registry.seed_initial_price("polymarket", poly_b.token_id, poly_b.actual_price or poly_b.implied_prob)
+        registry.seed_initial_price("kalshi", kalshi_a.raw_id, kalshi_a.actual_price or kalshi_a.implied_prob)
+        registry.seed_initial_price("kalshi", kalshi_b.raw_id, kalshi_b.actual_price or kalshi_b.implied_prob)
         # Build reverse lookups
         if match.poly_token_id_a:
             registry._poly_to_match[match.poly_token_id_a] = (match_id, "a")
@@ -418,6 +436,9 @@ def build_registry_from_scanner() -> MarketRegistry:
         )
 
         registry.matches[match_id] = match
+        # Seed initial prices from scanner
+        registry.seed_initial_price("polymarket", over_poly.token_id, over_poly.actual_price or over_poly.implied_prob)
+        registry.seed_initial_price("polymarket", under_poly.token_id, under_poly.actual_price or under_poly.implied_prob)
         if match.poly_token_id_a:
             registry._poly_to_match[match.poly_token_id_a] = (match_id, "a")
         if match.poly_token_id_b:
@@ -482,6 +503,9 @@ def _add_single_platform_matches(
             match.kalshi_ticker_b = team_b.raw_id
 
         registry.matches[match_id] = match
+        # Seed initial prices from scanner
+        registry.seed_initial_price(platform, team_a.token_id or team_a.raw_id, team_a.actual_price or team_a.implied_prob)
+        registry.seed_initial_price(platform, team_b.token_id or team_b.raw_id, team_b.actual_price or team_b.implied_prob)
         if match.poly_token_id_a:
             registry._poly_to_match[match.poly_token_id_a] = (match_id, "a")
         if match.poly_token_id_b:

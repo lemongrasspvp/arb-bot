@@ -872,6 +872,10 @@ class ArbEngine:
             cached = self.prices[platform].get(market_id, {})
             market_ask = cached.get("best_ask", 0)
             if market_ask <= 0:
+                logger.debug(
+                    "Value skip (no cached price): %s %s market_id=%s",
+                    team_name, platform, market_id[:30],
+                )
                 continue
 
             # --- VWAP-based cost calculation ---

@@ -280,6 +280,15 @@ async def run_bot(live: bool = False) -> None:
         on_trade_fn=lambda: save_positions(portfolio),
     )
 
+    # Seed engine price cache with scanner data so value checks work
+    # immediately, without waiting for WS to send an update.
+    seeded = 0
+    for platform, prices in registry.initial_prices.items():
+        for market_id, price_data in prices.items():
+            engine.prices[platform][market_id] = price_data
+            seeded += 1
+    console.print(f"[dim]  Seeded {seeded} initial prices from scanner[/dim]")
+
     # Step 5: Create shared queues and shutdown event
     price_queue = asyncio.Queue()
     shutdown_event = asyncio.Event()
