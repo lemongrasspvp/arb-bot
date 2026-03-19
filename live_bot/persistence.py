@@ -67,7 +67,14 @@ def load_positions(portfolio) -> int:
         data = json.loads(POSITIONS_FILE.read_text())
 
         # Restore portfolio stats
-        portfolio.current_balance = data.get("balance", portfolio.starting_balance)
+        saved_balance = data.get("balance", portfolio.starting_balance)
+        saved_starting = data.get("starting_balance", 1000.0)
+        # One-time migration: if starting_balance increased (deposit), add the difference
+        if portfolio.starting_balance > saved_starting:
+            deposit = portfolio.starting_balance - saved_starting
+            saved_balance += deposit
+            logger.info("Deposit detected: +$%.2f (starting %.0f → %.0f)", deposit, saved_starting, portfolio.starting_balance)
+        portfolio.current_balance = saved_balance
         portfolio.total_pnl = data.get("total_pnl", 0.0)
         portfolio.daily_pnl = data.get("daily_pnl", 0.0)
         portfolio.arb_count = data.get("arb_count", 0)

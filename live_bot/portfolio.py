@@ -57,8 +57,8 @@ class Position:
 @dataclass
 class PaperPortfolio:
     """Tracks simulated trading performance."""
-    starting_balance: float = 1000.0
-    current_balance: float = 1000.0
+    starting_balance: float = 3000.0
+    current_balance: float = 3000.0
     positions: list[Position] = field(default_factory=list)
     trades: list[Trade] = field(default_factory=list)
 
