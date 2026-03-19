@@ -1,27 +1,154 @@
-"""Fill simulator for simulation mode — calibrated to real-money execution.
+"""Fill simulator — orderbook re-check model for post-and-cancel execution.
 
-Models real-world fill behavior for market orders on prediction markets:
+Instead of probabilistic fill rates, this simulator:
+1. Waits a configurable delay (default 2s) to simulate order resting time
+2. Re-fetches the orderbook from the exchange
+3. Walks the book at the limit price to determine how many shares fill
+4. Returns full, partial, or zero fill based on actual available liquidity
 
-1. VALUE BETS — Market orders fill almost always (~97%). The only miss
-   is when the price moves during the 1-3s order latency. Value edges
-   are less visible to competitors, so prices are stable.
-
-2. ARB BETS — More competitive. Other bots see the same mispricing and
-   race to fill. Fill rates depend on depth and price staleness.
-   Typical fill rate: 70-90% depending on depth and latency.
-
-3. SLIPPAGE — Even when you fill, the actual execution price may be
-   slightly worse than the displayed price, especially on thin books.
+This replaces the old 97%/90% flat-rate model with a direct observation.
 """
 
+import asyncio
 import logging
-import math
-import random
-
-from live_bot.config import SIMULATE_KALSHI_WS
 
 logger = logging.getLogger(__name__)
 
+
+async def simulate_value_fill_recheck(
+    platform: str,
+    market_id: str,
+    limit_price: float,
+    intended_shares: int,
+    delay_seconds: float = 2.0,
+) -> tuple[int, float]:
+    """Simulate a limit order by re-checking the orderbook after a delay.
+
+    1. Wait `delay_seconds` (simulates order resting time)
+    2. Re-fetch the orderbook from the exchange
+    3. Walk the book: count how many shares are available at or below limit_price
+    4. Return (filled_shares, fill_vwap) — may be full, partial, or zero
+
+    Args:
+        platform: "polymarket" or "kalshi"
+        market_id: token_id or ticker
+        limit_price: max price we're willing to pay (our limit order price)
+        intended_shares: how many shares we want
+        delay_seconds: how long to wait before re-checking
+
+    Returns:
+        (filled_shares, fill_vwap) — 0 shares means no fill
+    """
+    # Wait to simulate order resting time
+    await asyncio.sleep(delay_seconds)
+
+    # Re-fetch the orderbook
+    try:
+        ask_levels = await _fetch_orderbook(platform, market_id)
+    except Exception as exc:
+        logger.warning("Fill recheck: failed to fetch book for %s — %s", market_id[:30], exc)
+        return 0, 0.0
+
+    if not ask_levels:
+        logger.debug("Fill recheck: empty book for %s", market_id[:30])
+        return 0, 0.0
+
+    # Walk the book at our limit price
+    filled_shares = 0
+    total_cost = 0.0
+
+    for price, size_shares in sorted(ask_levels, key=lambda x: x[0]):
+        if price > limit_price:
+            break  # Beyond our limit
+
+        # How many shares can we take from this level?
+        remaining = intended_shares - filled_shares
+        take = min(remaining, size_shares)
+
+        filled_shares += int(take)
+        total_cost += price * int(take)
+
+        if filled_shares >= intended_shares:
+            break
+
+    if filled_shares <= 0:
+        return 0, 0.0
+
+    fill_vwap = total_cost / filled_shares
+    return filled_shares, fill_vwap
+
+
+async def _fetch_orderbook(platform: str, market_id: str) -> list[tuple[float, float]]:
+    """Fetch current ask levels from the exchange.
+
+    Returns list of (price, size_in_shares) tuples.
+    """
+    if platform == "polymarket":
+        return await _fetch_poly_book(market_id)
+    elif platform == "kalshi":
+        return await _fetch_kalshi_book(market_id)
+    return []
+
+
+async def _fetch_poly_book(token_id: str) -> list[tuple[float, float]]:
+    """Fetch Polymarket CLOB orderbook for a token."""
+    import requests
+
+    try:
+        resp = await asyncio.to_thread(
+            requests.get,
+            f"https://clob.polymarket.com/book",
+            params={"token_id": token_id},
+            timeout=5,
+        )
+        if resp.status_code != 200:
+            return []
+
+        data = resp.json()
+        asks = data.get("asks", [])
+        levels = []
+        for ask in asks:
+            price = float(ask.get("price", 0))
+            size = float(ask.get("size", 0))
+            if price > 0 and size > 0:
+                levels.append((price, size))
+        return levels
+
+    except Exception as exc:
+        logger.debug("Poly book fetch error: %s", exc)
+        return []
+
+
+async def _fetch_kalshi_book(ticker: str) -> list[tuple[float, float]]:
+    """Fetch Kalshi orderbook for a ticker."""
+    import requests
+    from live_bot.config import KALSHI_REST_BASE
+
+    try:
+        resp = await asyncio.to_thread(
+            requests.get,
+            f"{KALSHI_REST_BASE}/markets/{ticker}/orderbook",
+            timeout=5,
+        )
+        if resp.status_code != 200:
+            return []
+
+        data = resp.json().get("orderbook", {})
+        asks = data.get("yes", [])  # yes asks = what we buy
+        levels = []
+        for ask in asks:
+            price = float(ask.get("price", 0)) / 100  # Kalshi uses cents
+            size = float(ask.get("quantity", 0))
+            if price > 0 and size > 0:
+                levels.append((price, size))
+        return levels
+
+    except Exception as exc:
+        logger.debug("Kalshi book fetch error: %s", exc)
+        return []
+
+
+# ── Legacy arb fill simulator (kept for arb strategy if re-enabled) ──
 
 def simulate_arb_fill(
     price_a: float,
@@ -33,118 +160,47 @@ def simulate_arb_fill(
     platform_a: str,
     platform_b: str,
 ) -> tuple[bool, bool, float, float]:
-    """Simulate whether both arb legs would fill in reality.
+    """Legacy arb fill simulation (probabilistic). Kept for arb strategy."""
+    import math
+    import random
 
-    Args:
-        price_a/b: Ask price on each leg
-        depth_usd_a/b: Available USD depth at that price (shares * price)
-        price_age_a/b: How old the cached price is (seconds)
-        platform_a/b: "polymarket" or "kalshi"
-
-    Returns:
-        (filled_a, filled_b, slip_a, slip_b)
-        filled: whether the leg would have filled
-        slip: price slippage in cents (added to cost)
-    """
-    fill_a, slip_a = _simulate_single_fill(
-        depth_usd_a, price_age_a, platform_a, is_arb=True
-    )
-    fill_b, slip_b = _simulate_single_fill(
-        depth_usd_b, price_age_b, platform_b, is_arb=True
-    )
+    fill_a, slip_a = _legacy_single_fill(depth_usd_a, price_age_a, platform_a)
+    fill_b, slip_b = _legacy_single_fill(depth_usd_b, price_age_b, platform_b)
     return fill_a, fill_b, slip_a, slip_b
 
 
-def simulate_value_fill(
-    price: float,
-    depth_usd: float,
-    price_age: float,
-    platform: str,
-) -> tuple[bool, float]:
-    """Simulate whether a value bet would fill.
-
-    Value bets are less competitive than arbs (require a specific edge
-    model + Pinnacle reference), so fill rates are higher.
-
-    Returns:
-        (filled, slippage_cents)
-    """
-    return _simulate_single_fill(
-        depth_usd, price_age, platform, is_arb=False
-    )
-
-
-def _simulate_single_fill(
+def _legacy_single_fill(
     depth_usd: float,
     price_age_seconds: float,
     platform: str,
-    is_arb: bool,
 ) -> tuple[bool, float]:
-    """Core fill model for a single order — calibrated to real market orders.
+    """Legacy probabilistic fill for arb legs."""
+    import math
+    import random
+    from live_bot.config import SIMULATE_KALSHI_WS
 
-    VALUE BETS (is_arb=False):
-      Market orders on prediction markets fill almost always. The only
-      miss scenario is the price moving during the 1-3s between seeing
-      the quote and the order arriving at the exchange. Value edges are
-      less visible to other bots (require a model + Pinnacle reference),
-      so the price is very stable.
-      → Base fill rate: 97%, with a small latency penalty for stale prices.
+    char_depth = 800.0
+    if depth_usd <= 0:
+        depth_usd = 500.0
 
-    ARB BETS (is_arb=True):
-      Arb opportunities are visible to every bot scanning the same feeds.
-      Multiple bots race to fill the same depth, so competition matters.
-      Fill rate depends on depth available and price staleness.
-      → Fill rate: 70-95% depending on conditions.
-    """
-    if not is_arb:
-        # ── VALUE BET: market order, ~97% base fill rate ──
-        # Only miss if the price moved during order latency.
-        # Small penalty for very stale prices (>10s old).
-        base_fill = 0.97
+    depth_survival = 1.0 - math.exp(-depth_usd / char_depth)
 
-        # Platform-specific staleness
-        effective_age = price_age_seconds
-        if platform == "kalshi" and not SIMULATE_KALSHI_WS:
-            effective_age += 7.5
+    if platform == "kalshi" and not SIMULATE_KALSHI_WS:
+        price_age_seconds += 7.5
 
-        # Gentle latency penalty: lose ~1% per 5s of staleness
-        # At 0s age → 97%, at 5s → 96%, at 15s → 94%
-        latency_penalty = effective_age * 0.002
-        fill_prob = max(0.90, base_fill - latency_penalty)
+    half_life = 3.0
+    freshness = math.exp(-price_age_seconds * math.log(2) / half_life)
 
-    else:
-        # ── ARB BET: competitive, depth and freshness matter ──
-        char_depth = 800.0
-
-        if depth_usd <= 0:
-            depth_usd = 500.0
-
-        depth_survival = 1.0 - math.exp(-depth_usd / char_depth)
-
-        if platform == "kalshi" and not SIMULATE_KALSHI_WS:
-            price_age_seconds += 7.5
-
-        half_life = 3.0
-        freshness = math.exp(-price_age_seconds * math.log(2) / half_life)
-
-        fill_prob = depth_survival * freshness
-
-    # Clamp to reasonable range
+    fill_prob = depth_survival * freshness
     fill_prob = max(0.05, min(0.98, fill_prob))
 
-    # Roll the dice
     filled = random.random() < fill_prob
-
-    # Slippage is already accounted for by the VWAP calculation in the engine
-    # (which walks the real orderbook). No need to simulate additional slippage.
     slippage = 0.0
 
-    logger.debug(
-        "Fill sim: depth=$%.0f age=%.1fs %s %s → prob=%.0f%% → %s",
-        depth_usd, price_age_seconds, platform,
-        "ARB" if is_arb else "VALUE",
-        fill_prob * 100,
-        "FILL" if filled else "MISS",
-    )
-
     return filled, slippage
+
+
+# Also keep the old function name as alias for backward compat
+def _simulate_single_fill(depth_usd, price_age_seconds, platform, is_arb=True):
+    """Backward compat wrapper."""
+    return _legacy_single_fill(depth_usd, price_age_seconds, platform)

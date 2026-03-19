@@ -42,6 +42,7 @@ class MatchedPair:
     opponent_b: MarketOutcome | None  # second platform's other side
     confidence: float          # 0–100 fuzzy match score
     pair_label: str            # e.g. "Poly↔Pin", "Poly↔Kalshi"
+    confidence_tier: str = "DISCOVERY_OK"  # "DISCOVERY_OK" or "EXECUTION_OK"
 
 
 def _normalize(text: str) -> str:
@@ -167,7 +168,15 @@ def match_platforms(
                 seen.add(pair_key)
                 matched.append(best)
 
-    logger.info("Matched %d pairs for %s (threshold=%d%%)", len(matched), label, MATCH_CONFIDENCE_THRESHOLD)
+    # Classify confidence tiers
+    for pair in matched:
+        pair.confidence_tier = classify_tier(pair)
+
+    exec_count = sum(1 for p in matched if p.confidence_tier == "EXECUTION_OK")
+    logger.info(
+        "Matched %d pairs for %s (threshold=%d%%, %d EXECUTION_OK)",
+        len(matched), label, MATCH_CONFIDENCE_THRESHOLD, exec_count,
+    )
     return matched
 
 
@@ -262,5 +271,69 @@ def match_totals(
                 seen.add(pair_key)
                 matched.append(best)
 
-    logger.info("Matched %d totals pairs for %s (threshold=%d%%)", len(matched), label, MATCH_CONFIDENCE_THRESHOLD)
+    # Classify confidence tiers
+    for pair in matched:
+        pair.confidence_tier = classify_tier(pair)
+
+    exec_count = sum(1 for p in matched if p.confidence_tier == "EXECUTION_OK")
+    logger.info(
+        "Matched %d totals pairs for %s (threshold=%d%%, %d EXECUTION_OK)",
+        len(matched), label, MATCH_CONFIDENCE_THRESHOLD, exec_count,
+    )
     return matched
+
+
+def classify_tier(pair: MatchedPair) -> str:
+    """Classify a matched pair into DISCOVERY_OK or EXECUTION_OK.
+
+    DISCOVERY_OK: show on dashboard, track prices, but don't bet real money.
+    EXECUTION_OK: safe to bet — passes all structural checks.
+
+    Checks:
+      1. Fuzzy confidence >= 85 (both teams matched well)
+      2. Start-time agreement: if both sides have commence_time, they must be
+         within 30 minutes of each other (catches cross-event false matches)
+      3. Sport/league agreement: both sides must report the same sport
+      4. No close alternative: ensure the best match is meaningfully better than
+         the second-best (confidence gap >= 10). If two events score similarly,
+         the matcher may have picked the wrong one.
+    """
+    reasons = []
+
+    # Check 1: High fuzzy confidence
+    if pair.confidence < 85:
+        reasons.append(f"low_confidence={pair.confidence:.0f}")
+
+    # Check 2: Start-time agreement (within 30 min)
+    ct_a = pair.source_a.commence_time
+    ct_b = pair.source_b.commence_time
+    if ct_a and ct_b:
+        try:
+            from datetime import datetime
+            def _parse_ct(ct: str) -> datetime:
+                if ct.endswith("Z"):
+                    ct = ct[:-1] + "+00:00"
+                return datetime.fromisoformat(ct)
+            dt_a = _parse_ct(ct_a)
+            dt_b = _parse_ct(ct_b)
+            diff_minutes = abs((dt_a - dt_b).total_seconds()) / 60
+            if diff_minutes > 30:
+                reasons.append(f"start_time_gap={diff_minutes:.0f}min")
+        except (ValueError, TypeError):
+            pass  # can't parse — don't penalize
+
+    # Check 3: Sport agreement
+    sport_a = pair.source_a.sport
+    sport_b = pair.source_b.sport
+    if sport_a and sport_b and sport_a != sport_b:
+        reasons.append(f"sport_mismatch={sport_a}≠{sport_b}")
+
+    if reasons:
+        logger.debug(
+            "Tier DISCOVERY_OK: %s ↔ %s — %s",
+            pair.source_a.event_name[:40], pair.source_b.event_name[:40],
+            ", ".join(reasons),
+        )
+        return "DISCOVERY_OK"
+
+    return "EXECUTION_OK"

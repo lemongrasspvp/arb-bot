@@ -44,6 +44,8 @@ class TrackedMatch:
     # actively moving (steam move / sharp action) and our reference is unreliable.
     pinnacle_moving_a: bool = False
     pinnacle_moving_b: bool = False
+    # Two-tier matching: DISCOVERY_OK (show on dashboard only) vs EXECUTION_OK (safe to bet)
+    confidence_tier: str = "DISCOVERY_OK"
 
 
 class MarketRegistry:
@@ -374,6 +376,7 @@ def build_registry_from_scanner() -> MarketRegistry:
             pinnacle_prob_a=pin_prob_a,
             pinnacle_prob_b=pin_prob_b,
             commence_time=commence,
+            confidence_tier=pair.confidence_tier,
         )
 
         registry.matches[match_id] = match
@@ -433,6 +436,7 @@ def build_registry_from_scanner() -> MarketRegistry:
             pinnacle_prob_a=over_pin.implied_prob,
             pinnacle_prob_b=under_pin.implied_prob,
             commence_time=over_pin.commence_time or over_poly.commence_time,
+            confidence_tier=pair.confidence_tier,
         )
 
         registry.matches[match_id] = match
@@ -444,7 +448,11 @@ def build_registry_from_scanner() -> MarketRegistry:
         if match.poly_token_id_b:
             registry._poly_to_match[match.poly_token_id_b] = (match_id, "b")
 
-    logger.info("Registry built: %d tracked matches", len(registry.matches))
+    exec_ok = sum(1 for m in registry.matches.values() if m.confidence_tier == "EXECUTION_OK")
+    logger.info(
+        "Registry built: %d tracked matches (%d EXECUTION_OK, %d DISCOVERY_OK)",
+        len(registry.matches), exec_ok, len(registry.matches) - exec_ok,
+    )
     return registry
 
 
@@ -485,6 +493,14 @@ def _add_single_platform_matches(
         if pin_prob_a <= 0 and pin_prob_b <= 0:
             continue
 
+        # Classify tier for single-platform matches:
+        # EXECUTION_OK requires both Pinnacle probs found and summing to ~1.0
+        tier = "DISCOVERY_OK"
+        if pin_prob_a > 0 and pin_prob_b > 0:
+            prob_sum = pin_prob_a + pin_prob_b
+            if 0.90 <= prob_sum <= 1.10:
+                tier = "EXECUTION_OK"
+
         match = TrackedMatch(
             match_id=match_id,
             teams=(team_a.team_name, team_b.team_name),
@@ -492,6 +508,7 @@ def _add_single_platform_matches(
             commence_time=team_a.commence_time or team_b.commence_time,
             pinnacle_prob_a=pin_prob_a,
             pinnacle_prob_b=pin_prob_b,
+            confidence_tier=tier,
         )
 
         if platform == "polymarket":

@@ -10,6 +10,10 @@ from live_bot.config import (
     MAX_CONCURRENT_POSITIONS,
     COOLDOWN_SECONDS,
     KELLY_FRACTION,
+    WALLET_CAP,
+    MAX_EXPOSURE_PCT,
+    MAX_BET_PCT,
+    MAX_DAILY_LOSS_PCT,
     MIN_WIN_PROB,
     TIER_MID_PROB,
     TIER_LOW_MAX_USD,
@@ -44,9 +48,11 @@ def check_risk(portfolio, trade: ProposedTrade) -> tuple[bool, str]:
     if trade.size_usd < 1.0:
         return False, f"Size ${trade.size_usd:.2f} too small"
 
-    # Daily loss limit (primarily for value bets which can lose)
-    if portfolio.daily_pnl < -MAX_DAILY_LOSS_USD:
-        return False, f"Daily loss limit hit: ${portfolio.daily_pnl:.2f}"
+    # Daily loss limit — percentage of total portfolio value (e.g. 15%)
+    total_value = portfolio.total_portfolio_value
+    max_daily_loss = total_value * (MAX_DAILY_LOSS_PCT / 100)
+    if portfolio.daily_pnl < -max_daily_loss:
+        return False, f"Daily loss limit hit: ${portfolio.daily_pnl:.2f} (>{MAX_DAILY_LOSS_PCT}% of ${total_value:.0f})"
 
     # Max concurrent open positions
     if len(portfolio.open_positions) >= MAX_CONCURRENT_POSITIONS:
@@ -67,6 +73,14 @@ def check_risk(portfolio, trade: ProposedTrade) -> tuple[bool, str]:
         open_match_ids = {p.match_id for p in portfolio.positions}
         if trade.match_id in open_match_ids:
             return False, f"Already have exposure to match {trade.match_id}"
+
+    # Exposure limit: block new trades if deployed capital would exceed max %
+    total_value = portfolio.total_portfolio_value
+    if total_value > 0:
+        deployed = sum(p.cost_usd for p in portfolio.positions)
+        new_exposure_pct = (deployed + trade.size_usd) / total_value * 100
+        if new_exposure_pct > MAX_EXPOSURE_PCT:
+            return False, f"Exposure {new_exposure_pct:.0f}% would exceed {MAX_EXPOSURE_PCT:.0f}% cap"
 
     # Sufficient balance
     if trade.size_usd > portfolio.current_balance:
@@ -126,11 +140,15 @@ def kelly_size(
     kelly = (b * win_prob - q) / b
     kelly = max(0.0, kelly)
 
-    # Half-Kelly for safety
-    size = balance * kelly * KELLY_FRACTION
+    # Cap balance at WALLET_CAP — excess is withdrawable profit
+    effective_balance = min(balance, WALLET_CAP)
 
-    # Cap by tier AND global max
-    size = min(size, tier_max, MAX_POSITION_USD)
+    # Half-Kelly for safety
+    size = effective_balance * kelly * KELLY_FRACTION
+
+    # Cap by tier, global max, and % of portfolio
+    max_bet_usd = effective_balance * (MAX_BET_PCT / 100)
+    size = min(size, tier_max, MAX_POSITION_USD, max_bet_usd)
 
     logger.debug(
         "Kelly sizing: prob=%.0f%% edge=%.1f%% kelly=%.4f → $%.2f (tier=%s, max=$%.0f)",

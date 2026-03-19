@@ -37,8 +37,22 @@ MIDGAME_VALUE_EDGE_PCT = float(os.getenv("MIDGAME_VALUE_EDGE_PCT", "8.0"))
 PINNACLE_POLL_INTERVAL = int(os.getenv("PINNACLE_POLL_INTERVAL", "8"))  # pregame
 PINNACLE_LIVE_POLL_INTERVAL = int(os.getenv("PINNACLE_LIVE_POLL_INTERVAL", "4"))  # live
 KELLY_FRACTION = float(os.getenv("KELLY_FRACTION", "0.5"))  # half-Kelly
-# Edge persistence: require edge to be seen on N consecutive checks (30s apart) before betting
+# Wallet cap: Kelly sizes as if bankroll is at most this value.
+# Anything above this is withdrawable profit.
+WALLET_CAP = float(os.getenv("WALLET_CAP", "25000"))
+# Max portfolio exposure: stop opening new positions when deployed capital exceeds this % of total portfolio
+MAX_EXPOSURE_PCT = float(os.getenv("MAX_EXPOSURE_PCT", "50"))
+# Max single bet as % of total portfolio value
+MAX_BET_PCT = float(os.getenv("MAX_BET_PCT", "5"))
+# Edge persistence: require edge to survive N separate Pinnacle poll cycles before betting.
+# Count-based + freshness: each observation must have a newer Pinnacle + market timestamp.
 VALUE_EDGE_PERSISTENCE = int(os.getenv("VALUE_EDGE_PERSISTENCE", "2"))
+
+# Fill re-check delay: seconds to wait before re-checking the orderbook for fill sim
+FILL_RECHECK_DELAY = float(os.getenv("FILL_RECHECK_DELAY", "2.0"))
+
+# Daily loss limit as % of total portfolio value (stops all trading if breached)
+MAX_DAILY_LOSS_PCT = float(os.getenv("MAX_DAILY_LOSS_PCT", "15"))
 
 # ── Risk limits ──────────────────────────────────────────────────────
 # Max position removed — Kelly + depth-aware sizing handles this.

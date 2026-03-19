@@ -52,6 +52,7 @@ class Position:
     strategy: str          # "ARB" or "VALUE"
     timing: str = ""       # "pregame" or "midgame"
     condition_id: str = ""  # Polymarket condition_id (for resolution lookups)
+    pinnacle_prob_at_entry: float = 0.0  # Pinnacle no-vig prob when bet was placed (for CLV)
 
 
 @dataclass
@@ -91,6 +92,12 @@ class PaperPortfolio:
     @property
     def open_market_ids(self) -> set[str]:
         return {p.market_id for p in self.positions}
+
+    @property
+    def total_portfolio_value(self) -> float:
+        """Cash + cost of all open positions (capital deployed)."""
+        deployed = sum(p.cost_usd for p in self.positions)
+        return self.current_balance + deployed
 
     def _check_daily_reset(self) -> None:
         """Reset daily P&L counter at midnight."""
@@ -212,6 +219,7 @@ class PaperPortfolio:
                 strategy="VALUE",
                 timing=timing,
                 condition_id=condition_id,
+                pinnacle_prob_at_entry=trade.pinnacle_prob,
             ))
             self.current_balance -= trade.size_usd
             logger.info(

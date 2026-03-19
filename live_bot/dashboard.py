@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-from live_bot.config import DASHBOARD_PORT, TRADE_LOG_PATH, SIMULATION_MODE
+from live_bot.config import DASHBOARD_PORT, TRADE_LOG_PATH, SIMULATION_MODE, WALLET_CAP
 from live_bot.feeds.pinnacle_poll import pinnacle_health
 
 logger = logging.getLogger(__name__)
@@ -262,12 +262,12 @@ tr:hover {{ background: rgba(88, 166, 255, 0.04); }}
     <div class="card blue">
         <div class="card-label">Balance</div>
         <div class="card-value">${portfolio.current_balance:.2f}</div>
-        <div class="meta">Started ${portfolio.starting_balance:.2f}</div>
+        <div class="meta">Portfolio ${portfolio.total_portfolio_value:.0f} / Cap ${WALLET_CAP:.0f}</div>
     </div>
     <div class="card {'green' if portfolio.total_pnl >= 0 else 'red'}">
         <div class="card-label">Total P&amp;L</div>
         <div class="card-value {'positive' if portfolio.total_pnl >= 0 else 'negative'}">${portfolio.total_pnl:+.2f}</div>
-        <div class="meta">{portfolio.total_pnl / portfolio.starting_balance * 100:+.1f}% return</div>
+        <div class="meta">{portfolio.total_pnl / portfolio.total_portfolio_value * 100 if portfolio.total_portfolio_value > 0 else 0:+.1f}% return</div>
     </div>
     <div class="card {'green' if portfolio.daily_pnl >= 0 else 'red'}">
         <div class="card-label">Daily P&amp;L</div>
@@ -276,7 +276,7 @@ tr:hover {{ background: rgba(88, 166, 255, 0.04); }}
     <div class="card yellow">
         <div class="card-label">Open Positions</div>
         <div class="card-value">{len(portfolio.positions)}</div>
-        <div class="meta">{portfolio.value_filled_count} filled trades</div>
+        <div class="meta">{portfolio.value_filled_count} trades | {sum(p.cost_usd for p in portfolio.positions) / portfolio.total_portfolio_value * 100 if portfolio.total_portfolio_value > 0 else 0:.0f}% deployed</div>
     </div>
     <div class="card" style="border-left-color: {pin_color}">
         <div class="card-label">Pinnacle API</div>

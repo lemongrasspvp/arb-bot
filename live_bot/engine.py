@@ -23,12 +23,13 @@ from live_bot.config import (
     MAX_PREGAME_HOURS,
     MAX_MATCH_DURATION_HOURS,
     MAX_POSITION_USD,
+    FILL_RECHECK_DELAY,
 )
 from live_bot.registry import MarketRegistry, TrackedMatch
 from live_bot.portfolio import PaperPortfolio, Trade
 from live_bot.risk import check_risk, kelly_size, ProposedTrade
 from live_bot.logger import log_trade, log_event
-from live_bot.fill_simulator import simulate_arb_fill, simulate_value_fill
+from live_bot.fill_simulator import simulate_value_fill_recheck, simulate_arb_fill
 
 
 
@@ -185,9 +186,13 @@ class ArbEngine:
         self._recent_arbs: dict[str, float] = {}
         self._recent_values: dict[str, float] = {}
 
-        # Edge persistence: track consecutive edge sightings
-        # key = val_key → {"first_seen": timestamp, "last_edge": float}
+        # Edge persistence: count-based + freshness across Pinnacle poll cycles
+        # key = val_key → {"count": int, "last_pinnacle_ts": float,
+        #                   "last_market_ts": float, "last_edge": float, "first_seen": float}
         self._edge_persistence: dict[str, dict] = {}
+
+        # Track the latest Pinnacle poll timestamp globally
+        self._last_pinnacle_poll_ts: float = 0.0
 
         # Throttle full-registry scans on Pinnacle polls
         self._last_pinnacle_scan: float = 0.0
@@ -264,10 +269,22 @@ class ArbEngine:
         match, side = self.registry.get_match_for_market(platform, market_id)
 
         if platform == "pinnacle":
+            # Track latest Pinnacle poll timestamp for edge persistence
+            self._last_pinnacle_poll_ts = update["timestamp"]
+
+            # Pinnacle health kill switch: refuse all value bets if Pinnacle is degraded
+            from live_bot.feeds.pinnacle_poll import pinnacle_health
+            pin_status = pinnacle_health.get("status", "ok")
+            pin_errors = pinnacle_health.get("consecutive_errors", 0)
+            if pin_status in ("rate_limited", "blocked") or pin_errors >= 3:
+                logger.warning(
+                    "Pinnacle health degraded (%s, %d consecutive errors) — skipping all value bets",
+                    pin_status, pin_errors,
+                )
+                return
+
             # Pinnacle updates don't map to specific matches via reverse lookup.
             # On Pinnacle poll, re-check ALL matches with cached market prices.
-            # This advances persistence timers that started from WS updates but
-            # stalled because the WS price didn't change.
             # Throttle: only do the full scan once per 5 seconds max.
             now = time.time()
             if ENABLE_VALUE and now - self._last_pinnacle_scan > 5.0:
@@ -704,6 +721,14 @@ class ArbEngine:
             except (ValueError, TypeError):
                 pass  # can't parse, continue with other checks
 
+        # ── Two-tier matching: only execute on EXECUTION_OK matches ──
+        if match.confidence_tier != "EXECUTION_OK":
+            logger.debug(
+                "Value skip (tier=%s): %s — match shown on dashboard but not safe to bet",
+                match.confidence_tier, match.match_id,
+            )
+            return
+
         # Check each team on each platform
         checks = []
         if match.pinnacle_prob_a > 0:
@@ -817,25 +842,32 @@ class ArbEngine:
                 )
                 continue
 
-            # --- Edge persistence check (time-based) ---
-            # Edge must exist for at least N seconds before we bet.
-            # Filters out momentary glitches and stale-reference false positives.
-            # Executes as soon as the timer passes — doesn't wait for next Pinnacle poll.
-            MIN_PERSISTENCE_SECONDS = float(VALUE_EDGE_PERSISTENCE)
+            # --- Edge persistence check (count-based + freshness) ---
+            # Edge must survive N separate Pinnacle poll cycles with fresh market data.
+            # Each observation requires:
+            #   - A newer Pinnacle poll timestamp than the previous observation
+            #   - A newer market price timestamp than the previous observation
+            #   - Edge still above threshold after VWAP at intended size
+            REQUIRED_OBSERVATIONS = VALUE_EDGE_PERSISTENCE
 
             val_key = f"{match.match_id}_{team_side}_{platform}"
             now = time.time()
+            current_pin_ts = self._last_pinnacle_poll_ts
+            current_mkt_ts = cached.get("timestamp", 0)
             persistence = self._edge_persistence.get(val_key)
 
             if persistence is None:
-                # First sighting — start the timer
+                # First sighting — record observation 1
                 self._edge_persistence[val_key] = {
+                    "count": 1,
                     "first_seen": now,
+                    "last_pinnacle_ts": current_pin_ts,
+                    "last_market_ts": current_mkt_ts,
                     "last_edge": edge,
                 }
                 logger.info(
-                    "Value persistence [new]: %s %s edge=%.1f%% — waiting %.0fs",
-                    team_name, platform, edge * 100, MIN_PERSISTENCE_SECONDS,
+                    "Value persistence [1/%d]: %s %s edge=%.1f%% — waiting for next Pinnacle poll",
+                    REQUIRED_OBSERVATIONS, team_name, platform, edge * 100,
                 )
                 continue
             else:
@@ -843,18 +875,37 @@ class ArbEngine:
                 # Too old (>90s) — edge disappeared and came back, reset
                 if age > 90:
                     self._edge_persistence[val_key] = {
+                        "count": 1,
                         "first_seen": now,
+                        "last_pinnacle_ts": current_pin_ts,
+                        "last_market_ts": current_mkt_ts,
                         "last_edge": edge,
                     }
                     continue
 
-                persistence["last_edge"] = edge
+                # Check if BOTH Pinnacle and market data are fresh since last observation
+                pin_is_fresh = current_pin_ts > persistence["last_pinnacle_ts"]
+                mkt_is_fresh = current_mkt_ts > persistence["last_market_ts"]
 
-                # Not enough time elapsed yet
-                if age < MIN_PERSISTENCE_SECONDS:
+                if pin_is_fresh and mkt_is_fresh:
+                    # New observation with fresh data from both sources
+                    persistence["count"] += 1
+                    persistence["last_pinnacle_ts"] = current_pin_ts
+                    persistence["last_market_ts"] = current_mkt_ts
+                    persistence["last_edge"] = edge
+                    logger.info(
+                        "Value persistence [%d/%d]: %s %s edge=%.1f%%",
+                        persistence["count"], REQUIRED_OBSERVATIONS,
+                        team_name, platform, edge * 100,
+                    )
+                else:
+                    # Same Pinnacle or market snapshot — don't increment, just update edge
+                    persistence["last_edge"] = edge
+
+                if persistence["count"] < REQUIRED_OBSERVATIONS:
                     continue
 
-            # Edge persisted! Clear persistence tracker
+            # Edge persisted across N Pinnacle poll cycles! Clear tracker
             self._edge_persistence.pop(val_key, None)
 
             # Deduplicate
@@ -863,7 +914,7 @@ class ArbEngine:
                 continue
 
             # Size using Kelly criterion
-            size = kelly_size(edge, pin_prob, self.portfolio.current_balance)
+            size = kelly_size(edge, pin_prob, self.portfolio.total_portfolio_value)
             if size < 1.0:
                 continue
 
@@ -896,26 +947,27 @@ class ArbEngine:
 
             self._recent_values[val_key] = now
 
-            # Gather depth and staleness for fill simulation
+            # Gather depth and staleness for fill simulation (no fake depth floors)
             depth_usd = cached.get("ask_depth_usd", 0) or (cached.get("ask_size", 0) * market_ask)
-            # Kalshi REST only reports top-of-book size, not full depth.
-            # Full orderbook is typically 5-20× deeper than best level.
-            # Assume $2000 minimum so the fill simulator doesn't reject
-            # every Kalshi bet due to apparent thin books.
-            if platform == "kalshi" and depth_usd < 2000:
-                depth_usd = max(depth_usd, 2000.0)
             price_age = now - cached.get("timestamp", now)
+
+            # Quote age logging: Pinnacle ref age + market quote age at signal time
+            pin_age_at_signal = now - last_seen if last_seen > 0 else -1.0
+            mkt_age_at_signal = price_age
 
             # Execute (pass effective_price which includes VWAP + fees)
             await self._execute_value(
                 match, platform, market_id, team_name, effective_price,
                 pin_prob, edge, size, timing, depth_usd, price_age,
+                pin_age_at_signal=pin_age_at_signal,
+                mkt_age_at_signal=mkt_age_at_signal,
             )
 
     async def _execute_value(
         self, match, platform, market_id, team_name,
         market_price, pin_prob, edge, size_usd, timing="pregame",
         depth_usd=0.0, price_age=0.0,
+        pin_age_at_signal=0.0, mkt_age_at_signal=0.0,
     ) -> None:
         """Execute a value bet — single leg."""
         async with self._portfolio_lock:
@@ -923,12 +975,14 @@ class ArbEngine:
                 match, platform, market_id, team_name,
                 market_price, pin_prob, edge, size_usd, timing,
                 depth_usd, price_age,
+                pin_age_at_signal, mkt_age_at_signal,
             )
 
     async def _execute_value_inner(
         self, match, platform, market_id, team_name,
         market_price, pin_prob, edge, size_usd, timing="pregame",
         depth_usd=0.0, price_age=0.0,
+        pin_age_at_signal=0.0, mkt_age_at_signal=0.0,
     ) -> None:
         """Inner value bet execution (called under portfolio lock)."""
         start = time.time()
@@ -938,19 +992,29 @@ class ArbEngine:
 
         logger.info(
             "📊 VALUE BET: %s %s@%s at %.0f¢ (pinnacle=%.0f¢, edge=%.1f%%) — %d shares ($%.2f) "
-            "(depth: $%.0f, age: %.1fs)",
+            "(depth: $%.0f, mkt_age: %.1fs, pin_age: %.1fs)",
             team_name, platform, match.match_id,
             market_price * 100, pin_prob * 100, edge * 100,
-            shares, size_usd, depth_usd, price_age,
+            shares, size_usd, depth_usd, mkt_age_at_signal, pin_age_at_signal,
         )
 
         if SIMULATION_MODE:
-            # Fill simulation — slippage is already in the VWAP price from the engine
-            filled, _slippage = simulate_value_fill(
-                market_price, depth_usd, price_age, platform
+            # Fill simulation: re-check orderbook after delay for realistic fill model
+            filled_shares, fill_price = await simulate_value_fill_recheck(
+                platform, market_id, market_price, shares, FILL_RECHECK_DELAY,
             )
-            if not filled:
-                logger.info("   ↳ Value bet missed fill (depth=$%.0f, age=%.1fs)", depth_usd, price_age)
+            filled = filled_shares > 0
+            if filled and filled_shares < shares:
+                # Partial fill — adjust size
+                logger.info(
+                    "   ↳ Partial fill: %d/%d shares at %.0f¢",
+                    filled_shares, shares, fill_price * 100,
+                )
+                shares = filled_shares
+                size_usd = shares * fill_price
+                market_price = fill_price
+            elif not filled:
+                logger.info("   ↳ Value bet missed fill (book gone after %.1fs re-check)", FILL_RECHECK_DELAY)
         else:
             if platform == "polymarket":
                 filled, details = await self.poly_exec.place_order(
@@ -962,6 +1026,7 @@ class ArbEngine:
                 )
 
         latency = (time.time() - start) * 1000
+        pin_age_at_order = time.time() - (self._last_pinnacle_poll_ts or time.time())
 
         trade = Trade(
             timestamp=time.time(),
@@ -1004,6 +1069,9 @@ class ArbEngine:
                 "timing": timing,
                 "pinnacle_prob_at_entry": round(pin_prob, 6),
                 "effective_price_vwap": round(market_price, 6),
+                "pin_age_at_signal": round(pin_age_at_signal, 1),
+                "mkt_age_at_signal": round(mkt_age_at_signal, 1),
+                "pin_age_at_order": round(pin_age_at_order, 1),
             },
         )
 
