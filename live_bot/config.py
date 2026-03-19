@@ -41,21 +41,21 @@ KELLY_FRACTION = float(os.getenv("KELLY_FRACTION", "0.5"))  # half-Kelly
 VALUE_EDGE_PERSISTENCE = int(os.getenv("VALUE_EDGE_PERSISTENCE", "2"))
 
 # ── Risk limits ──────────────────────────────────────────────────────
-MAX_POSITION_USD = float(os.getenv("MAX_POSITION_USD", "50"))
-# Daily loss limit disabled (set to 999999) — we need data, not protection right now.
-# Re-enable with a real value once we go live with real money.
+# Max position removed — Kelly + depth-aware sizing handles this.
+# The orderbook depth check (_max_size_for_edge) caps bets at what the
+# book can fill without slippage eating the edge. Kelly sizes the rest.
+MAX_POSITION_USD = float(os.getenv("MAX_POSITION_USD", "999999"))
 MAX_DAILY_LOSS_USD = float(os.getenv("MAX_DAILY_LOSS_USD", "999999"))
-# Concurrent position limit disabled — let the bot take every edge it finds.
 MAX_CONCURRENT_POSITIONS = int(os.getenv("MAX_CONCURRENT_POSITIONS", "999"))
 COOLDOWN_SECONDS = float(os.getenv("COOLDOWN_SECONDS", "5"))
 
-# ── Win probability tiers (value bets only) ──────────────────────────
-# Bets below MIN_WIN_PROB are skipped entirely.
-# Between tiers, max position is capped regardless of Kelly output.
+# ── Win probability filter (value bets only) ──────────────────────────
+# Bets below MIN_WIN_PROB are skipped entirely (too much variance).
 MIN_WIN_PROB = float(os.getenv("MIN_WIN_PROB", "0.30"))          # skip below 30%
-TIER_MID_PROB = float(os.getenv("TIER_MID_PROB", "0.50"))        # boundary between mid and high
-TIER_LOW_MAX_USD = float(os.getenv("TIER_LOW_MAX_USD", "25"))    # 30-50% win prob: max $25
-TIER_HIGH_MAX_USD = float(os.getenv("TIER_HIGH_MAX_USD", "50"))  # >50% win prob: max $50
+# Tier caps removed — depth-aware sizing is the real cap now.
+TIER_MID_PROB = float(os.getenv("TIER_MID_PROB", "0.50"))
+TIER_LOW_MAX_USD = float(os.getenv("TIER_LOW_MAX_USD", "999999"))
+TIER_HIGH_MAX_USD = float(os.getenv("TIER_HIGH_MAX_USD", "999999"))
 
 # ── Fill simulation ────────────────────────────────────────────────
 # Simulate as if we have Kalshi WS access (removes the +7.5s REST penalty).
