@@ -189,8 +189,11 @@ class ArbEngine:
         self._recent_values: dict[str, float] = {}
 
         # Edge persistence: track consecutive edge sightings
-        # key = val_key → {"count": int, "first_seen": timestamp, "last_edge": float}
+        # key = val_key → {"first_seen": timestamp, "last_edge": float}
         self._edge_persistence: dict[str, dict] = {}
+
+        # Throttle full-registry scans on Pinnacle polls
+        self._last_pinnacle_scan: float = 0.0
 
     @staticmethod
     def _get_match_timing(match: TrackedMatch) -> str:
@@ -332,6 +335,20 @@ class ArbEngine:
 
         # Find which tracked match this belongs to
         match, side = self.registry.get_match_for_market(platform, market_id)
+
+        if platform == "pinnacle":
+            # Pinnacle updates don't map to specific matches via reverse lookup.
+            # On Pinnacle poll, re-check ALL matches with cached market prices.
+            # This advances persistence timers that started from WS updates but
+            # stalled because the WS price didn't change.
+            # Throttle: only do the full scan once per 5 seconds max.
+            now = time.time()
+            if ENABLE_VALUE and now - self._last_pinnacle_scan > 5.0:
+                self._last_pinnacle_scan = now
+                for m in self.registry.matches.values():
+                    await self._check_value(m)
+            return
+
         if not match:
             return
 
