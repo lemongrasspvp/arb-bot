@@ -281,7 +281,7 @@ class PaperPortfolio:
         Decrements the relevant counters so stats stay accurate.
         """
         for i, pos in enumerate(self.positions):
-            if team_substring.lower() in pos.team.lower():
+            if team_substring.lower() in pos.team.lower() or team_substring.lower() in pos.match_id.lower():
                 self.current_balance += pos.cost_usd
                 # Fix counters
                 if pos.strategy == "VALUE":
