@@ -1127,7 +1127,12 @@ class ArbEngine:
                     continue
 
                 edge = (pin_prob / ask) - 1.0
-                if edge < 0.08:  # only track 8%+ edges
+                if edge < 0.08 or edge > 0.20:  # 8-20% range only (>20% = likely stale/bad match)
+                    continue
+
+                # Same divergence check as regular pipeline
+                divergence = abs(pin_prob - ask) * 100
+                if divergence > MAX_PRICE_DIVERGENCE_PCT:
                     continue
 
                 # Deduplicate: one entry per match/side/platform
