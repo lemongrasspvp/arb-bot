@@ -17,7 +17,6 @@ Models real-world fill behavior for market orders on prediction markets:
 import logging
 import math
 import random
-import time
 
 from live_bot.config import SIMULATE_KALSHI_WS
 
@@ -149,7 +148,3 @@ def _simulate_single_fill(
     )
 
     return filled, slippage
-
-
-    # NOTE: _simulate_slippage() removed — slippage is handled by the VWAP
-    # calculation in engine.py which walks the real orderbook levels.

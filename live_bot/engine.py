@@ -197,6 +197,9 @@ class ArbEngine:
         # Throttle full-registry scans on Pinnacle polls
         self._last_pinnacle_scan: float = 0.0
 
+        # Async lock to prevent concurrent portfolio modifications
+        self._portfolio_lock = asyncio.Lock()
+
     @staticmethod
     def _get_match_timing(match: TrackedMatch) -> str:
         """Determine if a match is 'pregame' or 'midgame' based on commence_time."""
@@ -929,10 +932,10 @@ class ArbEngine:
                 continue
 
             # --- Edge persistence check (time-based) ---
-            # Edge must exist for at least 3 seconds before we bet.
+            # Edge must exist for at least N seconds before we bet.
             # Filters out momentary glitches and stale-reference false positives.
-            # Executes as soon as 3s passes — doesn't wait for next Pinnacle poll.
-            MIN_PERSISTENCE_SECONDS = 3.0
+            # Executes as soon as the timer passes — doesn't wait for next Pinnacle poll.
+            MIN_PERSISTENCE_SECONDS = float(VALUE_EDGE_PERSISTENCE)
 
             val_key = f"{match.match_id}_{team_side}_{platform}"
             now = time.time()
@@ -1029,6 +1032,19 @@ class ArbEngine:
         depth_usd=0.0, price_age=0.0,
     ) -> None:
         """Execute a value bet — single leg."""
+        async with self._portfolio_lock:
+            await self._execute_value_inner(
+                match, platform, market_id, team_name,
+                market_price, pin_prob, edge, size_usd, timing,
+                depth_usd, price_age,
+            )
+
+    async def _execute_value_inner(
+        self, match, platform, market_id, team_name,
+        market_price, pin_prob, edge, size_usd, timing="pregame",
+        depth_usd=0.0, price_age=0.0,
+    ) -> None:
+        """Inner value bet execution (called under portfolio lock)."""
         start = time.time()
         shares = int(size_usd / market_price)
         if shares < 1:
