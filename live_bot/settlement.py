@@ -143,12 +143,13 @@ async def _check_poly_resolution(pos, registry) -> bool | None:
 
         data = resp.json()
         if not data:
-            logger.debug("Gamma API returned empty for token %s (team=%s)", token_id[:30], pos.team)
+            logger.warning("Gamma API returned empty for token %s (team=%s)", token_id[:30], pos.team)
             return None
 
         market = data[0]
 
         if not market.get("closed", False):
+            logger.info("Market not closed yet for %s (team=%s, closed=%s)", token_id[:30], pos.team, market.get("closed"))
             return None
 
         # Parse outcome prices and token IDs
@@ -173,7 +174,7 @@ async def _check_poly_resolution(pos, registry) -> bool | None:
                 elif settlement_price <= 0.01:
                     return False
                 # Price between 0.01 and 0.99 means not yet resolved
-                logger.debug("Token %s has price %.2f — not yet resolved", token_id[:30], settlement_price)
+                logger.info("Token %s has price %.2f — not yet resolved", token_id[:30], settlement_price)
                 return None
 
         # Token not found — log full details for debugging
