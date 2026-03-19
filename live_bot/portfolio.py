@@ -70,7 +70,8 @@ class PaperPortfolio:
     # Strategy-specific stats (legacy totals)
     arb_count: int = 0
     arb_pnl: float = 0.0
-    value_count: int = 0
+    value_count: int = 0        # all attempts (filled + unfilled)
+    value_filled_count: int = 0  # only filled trades
     value_pnl: float = 0.0
 
     # 4-bucket stats: strategy × timing
@@ -210,6 +211,7 @@ class PaperPortfolio:
         self.last_trade_time = trade.timestamp
 
         if trade.simulated and trade.would_fill:
+            self.value_filled_count += 1
             # In simulation, don't resolve P&L immediately — track as position
             self.positions.append(Position(
                 match_id=trade.match_id,

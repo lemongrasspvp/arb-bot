@@ -88,9 +88,6 @@ def _render_html(portfolio) -> str:
     # Strategy breakdown
     strategy_html = _build_strategy_table(portfolio)
 
-    # Shadow sims
-    shadow_html = _build_shadow_section(portfolio)
-
     # Pinnacle health
     pin_status = pinnacle_health["status"]
     pin_last_ok = pinnacle_health["last_success"]
@@ -203,13 +200,7 @@ td {{
     border-bottom: 1px solid #21262d;
 }}
 tr:hover {{ background: rgba(88, 166, 255, 0.04); }}
-.shadow-grid {{
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
-}}
 @media (max-width: 768px) {{
-    .shadow-grid {{ grid-template-columns: 1fr; }}
     .cards {{ grid-template-columns: 1fr 1fr; }}
 }}
 .chart-container {{
@@ -250,7 +241,7 @@ tr:hover {{ background: rgba(88, 166, 255, 0.04); }}
     <div class="card yellow">
         <div class="card-label">Open Positions</div>
         <div class="card-value">{len(portfolio.positions)}</div>
-        <div class="meta">{portfolio.arb_count + portfolio.value_count} total trades</div>
+        <div class="meta">{portfolio.value_filled_count} filled trades</div>
     </div>
     <div class="card" style="border-left-color: {pin_color}">
         <div class="card-label">Pinnacle API</div>
@@ -263,8 +254,6 @@ tr:hover {{ background: rgba(88, 166, 255, 0.04); }}
 
 {strategy_html}
 
-{shadow_html}
-
 {positions_html}
 
 {trades_html}
@@ -274,10 +263,8 @@ tr:hover {{ background: rgba(88, 166, 255, 0.04); }}
 
 
 def _build_strategy_table(portfolio) -> str:
-    """Strategy breakdown section."""
+    """Strategy breakdown section — value bets only."""
     rows = [
-        ("Pregame Arb", portfolio.pregame_arb_count, portfolio.pregame_arb_pnl),
-        ("Midgame Arb", portfolio.midgame_arb_count, portfolio.midgame_arb_pnl),
         ("Pregame Value", portfolio.pregame_value_count, portfolio.pregame_value_pnl),
         ("Midgame Value", portfolio.midgame_value_count, portfolio.midgame_value_pnl),
     ]
@@ -304,46 +291,6 @@ def _build_strategy_table(portfolio) -> str:
 </table>
 </div>"""
 
-
-def _build_shadow_section(portfolio) -> str:
-    """Shadow simulation comparison."""
-    maker_total = portfolio.maker_arb_count + portfolio.maker_value_count
-    maker_pnl = portfolio.maker_arb_pnl + portfolio.maker_value_pnl
-    maker_class = "positive" if maker_pnl >= 0 else "negative"
-
-    # Early exit tiers
-    tier_rows = ""
-    if portfolio.early_exit_tiers:
-        for label, stats in sorted(portfolio.early_exit_tiers.items()):
-            pnl = stats.get("pnl", 0)
-            count = stats.get("count", 0)
-            cls = "positive" if pnl >= 0 else "negative"
-            tier_rows += f"<tr><td>{label}</td><td>{count}</td><td class='{cls}'>${pnl:+.2f}</td></tr>\n"
-    else:
-        tier_rows = '<tr><td colspan="3" class="no-data">No early exit data yet</td></tr>'
-
-    return f"""<div class="section">
-<h2>Shadow Simulations</h2>
-<div class="shadow-grid">
-<div>
-<h2 style="font-size:13px;margin-bottom:8px">Maker Orders</h2>
-<table>
-<tr><th>Metric</th><th>Value</th></tr>
-<tr><td>Total fills</td><td>{maker_total}</td></tr>
-<tr><td>Arb P&amp;L</td><td class='{"positive" if portfolio.maker_arb_pnl >= 0 else "negative"}'>${portfolio.maker_arb_pnl:+.2f}</td></tr>
-<tr><td>Value P&amp;L</td><td class='{"positive" if portfolio.maker_value_pnl >= 0 else "negative"}'>${portfolio.maker_value_pnl:+.2f}</td></tr>
-<tr style="font-weight:bold;border-top:2px solid #30363d"><td>Combined</td><td class='{maker_class}'>${maker_pnl:+.2f}</td></tr>
-</table>
-</div>
-<div>
-<h2 style="font-size:13px;margin-bottom:8px">Early Exit Tiers</h2>
-<table>
-<tr><th>Tier</th><th>Exits</th><th>P&amp;L</th></tr>
-{tier_rows}
-</table>
-</div>
-</div>
-</div>"""
 
 
 def _build_positions_table(portfolio) -> str:
