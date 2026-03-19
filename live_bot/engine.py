@@ -769,23 +769,6 @@ class ArbEngine:
         if match.pinnacle_prob_a <= 0 and match.pinnacle_prob_b <= 0:
             return
 
-        # Diagnostic: log every check for high-edge matches (once per 30s max)
-        if match.pinnacle_prob_a > 0 and (match.poly_token_id_a or match.kalshi_ticker_a):
-            mid = match.poly_token_id_a or match.kalshi_ticker_a
-            cached = self.prices.get("polymarket", {}).get(mid) or self.prices.get("kalshi", {}).get(mid)
-            if cached and cached.get("best_ask", 0) > 0:
-                ask = cached["best_ask"]
-                edge_quick = (match.pinnacle_prob_a / ask) - 1.0
-                if edge_quick > 0.10:
-                    diag_key = f"diag_{match.match_id}_a"
-                    now = time.time()
-                    if now - self._recent_values.get(diag_key, 0) > 30:
-                        self._recent_values[diag_key] = now
-                        logger.info(
-                            "DIAG _check_value: %s pin=%.0f¢ ask=%.0f¢ edge=%.1f%% timing=%s",
-                            match.teams[0], match.pinnacle_prob_a * 100, ask * 100,
-                            edge_quick * 100, self._get_match_timing(match),
-                        )
 
         timing = self._get_match_timing(match)
 
@@ -853,20 +836,6 @@ class ArbEngine:
                                match.teams[1], match.pinnacle_prob_b))
 
         for team_side, platform, market_id, team_name, pin_prob in checks:
-            # One-time full diagnostic for high-edge matches
-            if pin_prob > 0.40 and platform == "polymarket":
-                cached_diag = self.prices[platform].get(market_id, {})
-                ask_diag = cached_diag.get("best_ask", 0)
-                if ask_diag > 0 and (pin_prob / ask_diag - 1) > 0.10:
-                    moving = match.pinnacle_moving_a if team_side == "a" else match.pinnacle_moving_b
-                    last_seen = match.pinnacle_last_seen_a if team_side == "a" else match.pinnacle_last_seen_b
-                    logger.info(
-                        "DIAG loop: %s %s ask=%.0f¢ moving=%s last_seen=%.0f frozen=%s",
-                        team_name, platform, ask_diag * 100, moving,
-                        time.time() - last_seen if last_seen > 0 else -1,
-                        match.pinnacle_frozen_a if team_side == "a" else match.pinnacle_frozen_b,
-                    )
-
             # Skip if Pinnacle odds are frozen (suspended line during live play)
             if timing == "midgame":
                 frozen = match.pinnacle_frozen_a if team_side == "a" else match.pinnacle_frozen_b
