@@ -67,34 +67,19 @@ class PaperPortfolio:
     daily_pnl: float = 0.0
     _daily_reset_date: str = ""
 
-    # Strategy-specific stats (legacy totals)
+    # Strategy-specific stats
     arb_count: int = 0
     arb_pnl: float = 0.0
     value_count: int = 0        # all attempts (filled + unfilled)
     value_filled_count: int = 0  # only filled trades
     value_pnl: float = 0.0
+    value_edge_sum: float = 0.0  # sum of edge_pct on filled trades (for avg)
 
-    # 4-bucket stats: strategy × timing
-    pregame_arb_count: int = 0
-    pregame_arb_pnl: float = 0.0
-    midgame_arb_count: int = 0
-    midgame_arb_pnl: float = 0.0
+    # 4-bucket stats: strategy × timing (filled only)
     pregame_value_count: int = 0
     pregame_value_pnl: float = 0.0
     midgame_value_count: int = 0
     midgame_value_pnl: float = 0.0
-
-    # Shadow simulation: maker orders (what if we used limit orders?)
-    maker_arb_count: int = 0
-    maker_arb_pnl: float = 0.0
-    maker_value_count: int = 0
-    maker_value_pnl: float = 0.0
-
-    # Shadow simulation: early exit — multiple tiers tracked independently
-    # Dict keyed by tier label (e.g. "TP3/SL5") → {"count": int, "pnl": float}
-    early_exit_tiers: dict = field(default_factory=dict)
-    # Shadow copies of positions — each position tracked across ALL tiers independently
-    early_exit_positions: list = field(default_factory=list)
 
     # Timing
     last_trade_time: float = 0.0
@@ -203,15 +188,16 @@ class PaperPortfolio:
         self._check_daily_reset()
         self.trades.append(trade)
         self.value_count += 1
-        timing = trade.timing or "pregame"
-        if timing == "pregame":
-            self.pregame_value_count += 1
-        else:
-            self.midgame_value_count += 1
         self.last_trade_time = trade.timestamp
 
         if trade.simulated and trade.would_fill:
             self.value_filled_count += 1
+            self.value_edge_sum += trade.edge_pct
+            timing = trade.timing or "pregame"
+            if timing == "pregame":
+                self.pregame_value_count += 1
+            else:
+                self.midgame_value_count += 1
             # In simulation, don't resolve P&L immediately — track as position
             self.positions.append(Position(
                 match_id=trade.match_id,
@@ -283,25 +269,13 @@ class PaperPortfolio:
     def summary(self) -> str:
         """Return a human-readable summary of portfolio state."""
         self._check_daily_reset()
+        avg_edge = self.value_edge_sum / self.value_filled_count if self.value_filled_count else 0
         lines = [
             f"Balance: ${self.current_balance:.2f} (started ${self.starting_balance:.2f}) | "
             f"Total P&L: ${self.total_pnl:.2f} | Daily P&L: ${self.daily_pnl:.2f} | "
             f"Open positions: {len(self.positions)}",
-            f"  Pregame Arb:   {self.pregame_arb_count} trades (${self.pregame_arb_pnl:.2f})",
-            f"  Midgame Arb:   {self.midgame_arb_count} trades (${self.midgame_arb_pnl:.2f})",
-            f"  Pregame Value: {self.pregame_value_count} trades (${self.pregame_value_pnl:.2f})",
-            f"  Midgame Value: {self.midgame_value_count} trades (${self.midgame_value_pnl:.2f})",
-            f"  --- Shadow Simulations ---",
-            f"  Maker Orders:  {self.maker_arb_count + self.maker_value_count} trades "
-            f"(arb ${self.maker_arb_pnl:.2f}, value ${self.maker_value_pnl:.2f})",
+            f"  Pregame Value: {self.pregame_value_count} filled (${self.pregame_value_pnl:.2f})",
+            f"  Midgame Value: {self.midgame_value_count} filled (${self.midgame_value_pnl:.2f})",
+            f"  Avg Edge: {avg_edge:.1f}%",
         ]
-        # Early exit tiers
-        if self.early_exit_tiers:
-            lines.append(f"  Early Exit Tiers:")
-            for label, stats in sorted(self.early_exit_tiers.items()):
-                lines.append(
-                    f"    {label}: {stats['count']} exits (${stats['pnl']:.2f})"
-                )
-        else:
-            lines.append(f"  Early Exit:    no data yet")
         return "\n".join(lines)

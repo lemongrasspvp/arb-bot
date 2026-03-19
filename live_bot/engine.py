@@ -17,11 +17,6 @@ from live_bot.config import (
     ALLOW_MIDGAME_VALUE,
     MAX_PRICE_DIVERGENCE_PCT,
     MIN_ARB_DEPTH_USD,
-    POLY_MAKER_REBATE,
-    MAKER_FILL_RATE,
-    MAKER_PRICE_IMPROVEMENT,
-    EARLY_EXIT_TIERS,
-    EARLY_EXIT_SPREAD_COST,
     VALUE_EDGE_PERSISTENCE,
     MAX_VALUE_EDGE_PCT,
     MAX_PINNACLE_AGE_SECONDS,
@@ -35,7 +30,7 @@ from live_bot.risk import check_risk, kelly_size, ProposedTrade
 from live_bot.logger import log_trade, log_event
 from live_bot.fill_simulator import simulate_arb_fill, simulate_value_fill
 
-import random
+
 
 logger = logging.getLogger(__name__)
 
@@ -233,79 +228,6 @@ class ArbEngine:
                 return
             except Exception:
                 logger.exception("Error processing price update")
-
-    async def early_exit_loop(self, shutdown_event: asyncio.Event | None = None) -> None:
-        """Shadow simulation: check if open value positions would benefit from early exit."""
-        from live_bot.config import EARLY_EXIT_CHECK_INTERVAL
-        while not (shutdown_event and shutdown_event.is_set()):
-            try:
-                await asyncio.wait_for(shutdown_event.wait(), timeout=EARLY_EXIT_CHECK_INTERVAL)
-                break
-            except asyncio.TimeoutError:
-                pass
-
-            self._check_early_exits()
-
-    def _check_early_exits(self) -> None:
-        """Check shadow positions for early exit across all tier thresholds.
-
-        Each position is tracked independently per tier. A position can be
-        "exited" in one tier (tight TP) but still open in another (wide TP).
-        """
-        for pos in self.portfolio.early_exit_positions:
-            cached = self.prices.get(pos["platform"], {}).get(pos["market_id"], {})
-            current_bid = cached.get("best_bid", 0)
-            if current_bid <= 0:
-                continue
-
-            entry = pos["entry_price"]
-            sell_price = current_bid - EARLY_EXIT_SPREAD_COST
-            price_move = sell_price - entry
-            pnl = price_move * pos["shares"]
-
-            # Check each tier independently
-            for tp, sl in EARLY_EXIT_TIERS:
-                label = f"TP{int(tp*100)}/SL{int(sl*100)}"
-
-                # Skip if this position already exited in this tier
-                exited_tiers = pos.get("exited_tiers", set())
-                if label in exited_tiers:
-                    continue
-
-                # Initialize tier stats if needed
-                if label not in self.portfolio.early_exit_tiers:
-                    self.portfolio.early_exit_tiers[label] = {"count": 0, "pnl": 0.0}
-
-                tier = self.portfolio.early_exit_tiers[label]
-
-                if price_move >= tp:
-                    tier["count"] += 1
-                    tier["pnl"] += pnl
-                    exited_tiers.add(label)
-                    pos["exited_tiers"] = exited_tiers
-                    logger.info(
-                        "   [EARLY EXIT %s] TP %s: %.0f¢→%.0f¢ = $%.2f",
-                        label, pos["team"], entry * 100, sell_price * 100, pnl,
-                    )
-                elif price_move <= -sl:
-                    tier["count"] += 1
-                    tier["pnl"] += pnl
-                    exited_tiers.add(label)
-                    pos["exited_tiers"] = exited_tiers
-                    logger.info(
-                        "   [EARLY EXIT %s] SL %s: %.0f¢→%.0f¢ = $%.2f",
-                        label, pos["team"], entry * 100, sell_price * 100, pnl,
-                    )
-
-        # Clean up positions where ALL tiers have exited or position is > 24h old
-        all_labels = {f"TP{int(tp*100)}/SL{int(sl*100)}" for tp, sl in EARLY_EXIT_TIERS}
-        now = time.time()
-        max_age = 86400  # 24 hours
-        self.portfolio.early_exit_positions = [
-            pos for pos in self.portfolio.early_exit_positions
-            if (not pos.get("exited_tiers", set()) >= all_labels)
-            and (now - pos.get("opened_at", now) < max_age)
-        ]
 
     async def _on_price_update(self, update: dict) -> None:
         """Process a single price update from any feed."""
@@ -730,42 +652,6 @@ class ArbEngine:
         if self._on_trade:
             self._on_trade()
 
-    def _shadow_maker_arb(
-        self, plat_a, plat_b, price_a, price_b, shares, taker_cost, match,
-    ):
-        """Shadow simulation: what would this arb look like with maker orders?"""
-        # Maker order on the Polymarket leg: better price + rebate
-        maker_price_a = price_a - MAKER_PRICE_IMPROVEMENT if plat_a == "polymarket" else price_a
-        maker_price_b = price_b - MAKER_PRICE_IMPROVEMENT if plat_b == "polymarket" else price_b
-
-        # Rebate on the Poly leg
-        rebate = 0.0
-        if plat_a == "polymarket":
-            rebate += maker_price_a * shares * POLY_MAKER_REBATE
-        if plat_b == "polymarket":
-            rebate += maker_price_b * shares * POLY_MAKER_REBATE
-
-        maker_cost = maker_price_a + maker_price_b
-        if plat_a == "kalshi":
-            maker_cost += _kalshi_fee(maker_price_a)
-        if plat_b == "kalshi":
-            maker_cost += _kalshi_fee(maker_price_b)
-
-        if maker_cost >= 1.0:
-            return
-
-        maker_profit_per_share = 1.0 - maker_cost
-        total_profit = maker_profit_per_share * shares + rebate
-
-        # But maker orders only fill MAKER_FILL_RATE of the time
-        if random.random() < MAKER_FILL_RATE:
-            self.portfolio.maker_arb_count += 1
-            self.portfolio.maker_arb_pnl += total_profit
-            logger.info(
-                "   [MAKER SIM] Arb would profit $%.2f (vs taker $%.2f) — rebate $%.3f",
-                total_profit, (1.0 - taker_cost) * shares, rebate,
-            )
-
     async def _check_value(self, match: TrackedMatch) -> None:
         """Check for value betting opportunity using Pinnacle as truth."""
         # Need Pinnacle reference prices
@@ -1120,35 +1006,6 @@ class ArbEngine:
                 "effective_price_vwap": round(market_price, 6),
             },
         )
-
-        # --- SHADOW: Maker order simulation ---
-        if SIMULATION_MODE and filled and platform == "polymarket":
-            maker_price = market_price - MAKER_PRICE_IMPROVEMENT
-            rebate = maker_price * shares * POLY_MAKER_REBATE
-            maker_edge = (pin_prob / maker_price) - 1.0
-            if maker_edge > 0 and random.random() < MAKER_FILL_RATE:
-                # Shadow P&L uses expected value: edge * size + rebate
-                ev_profit = maker_edge * shares * maker_price + rebate
-                self.portfolio.maker_value_count += 1
-                self.portfolio.maker_value_pnl += ev_profit
-                logger.info(
-                    "   [MAKER SIM] Value EV $%.2f (edge %.1f%% + rebate $%.3f)",
-                    ev_profit, maker_edge * 100, rebate,
-                )
-
-        # --- SHADOW: Early exit tracking ---
-        # Add a shadow copy of this position so we can check price movement later
-        if SIMULATION_MODE and filled:
-            self.portfolio.early_exit_positions.append({
-                "market_id": market_id,
-                "platform": platform,
-                "entry_price": market_price,
-                "shares": shares,
-                "cost_usd": shares * market_price,
-                "opened_at": time.time(),
-                "team": team_name,
-                "match_name": f"{match.teams[0]} vs {match.teams[1]}",
-            })
 
         if self._on_trade:
             self._on_trade()

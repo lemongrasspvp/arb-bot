@@ -33,9 +33,6 @@ from live_bot.config import (
     PINNACLE_LIVE_POLL_INTERVAL,
     SIMULATE_KALSHI_WS,
     MIN_ARB_DEPTH_USD,
-    POLY_MAKER_REBATE,
-    MAKER_FILL_RATE,
-    EARLY_EXIT_TIERS,
     DASHBOARD_PORT,
     VALUE_EDGE_PERSISTENCE,
     BOT_LOG_PATH,
@@ -227,9 +224,6 @@ async def run_bot(live: bool = False) -> None:
     table.add_row("Simulate Kalshi WS", "✅ Yes (no REST penalty)" if SIMULATE_KALSHI_WS else "❌ No (REST +7.5s)")
     table.add_row("Min arb depth", f"${MIN_ARB_DEPTH_USD}")
     table.add_row("Arb execution", "Sequential (harder leg first)")
-    table.add_row("Shadow: Maker sim", f"✅ (rebate {POLY_MAKER_REBATE*100:.1f}%, fill rate {MAKER_FILL_RATE*100:.0f}%)")
-    tier_str = ", ".join(f"TP{int(tp*100)}/SL{int(sl*100)}" for tp, sl in EARLY_EXIT_TIERS)
-    table.add_row("Shadow: Early exit", f"✅ {len(EARLY_EXIT_TIERS)} tiers ({tier_str})")
     console.print(table)
     console.print()
 
@@ -336,7 +330,6 @@ async def run_bot(live: bool = False) -> None:
                 lambda: save_positions(portfolio),
                 shutdown_event,
             ),
-            "early_exit_checker": lambda: engine.early_exit_loop(shutdown_event),
             "dashboard": lambda: dashboard_server(portfolio, shutdown_event),
         }
 

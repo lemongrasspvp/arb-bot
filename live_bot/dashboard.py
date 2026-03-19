@@ -264,7 +264,8 @@ tr:hover {{ background: rgba(88, 166, 255, 0.04); }}
 
 
 def _build_strategy_table(portfolio) -> str:
-    """Strategy breakdown section — value bets only."""
+    """Strategy breakdown section — filled value bets only."""
+    avg_edge = portfolio.value_edge_sum / portfolio.value_filled_count if portfolio.value_filled_count else 0
     rows = [
         ("Pregame Value", portfolio.pregame_value_count, portfolio.pregame_value_pnl),
         ("Midgame Value", portfolio.midgame_value_count, portfolio.midgame_value_pnl),
@@ -287,9 +288,10 @@ def _build_strategy_table(portfolio) -> str:
     return f"""<div class="section">
 <h2>Strategy Breakdown</h2>
 <table>
-<tr><th>Strategy</th><th>Trades</th><th>P&amp;L</th></tr>
+<tr><th>Strategy</th><th>Filled Trades</th><th>P&amp;L</th></tr>
 {row_html}
 </table>
+<p style="color:#8b949e;margin-top:8px;font-size:12px">Avg edge on filled: {avg_edge:.1f}% &middot; {portfolio.value_count - portfolio.value_filled_count} unfilled attempts filtered</p>
 </div>"""
 
 
