@@ -21,36 +21,13 @@ def save_positions(portfolio) -> None:
         "arb_count": portfolio.arb_count,
         "arb_pnl": portfolio.arb_pnl,
         "value_count": portfolio.value_count,
+        "value_filled_count": portfolio.value_filled_count,
+        "value_edge_sum": portfolio.value_edge_sum,
         "value_pnl": portfolio.value_pnl,
-        # 4-bucket stats
-        "pregame_arb_count": portfolio.pregame_arb_count,
-        "pregame_arb_pnl": portfolio.pregame_arb_pnl,
-        "midgame_arb_count": portfolio.midgame_arb_count,
-        "midgame_arb_pnl": portfolio.midgame_arb_pnl,
         "pregame_value_count": portfolio.pregame_value_count,
         "pregame_value_pnl": portfolio.pregame_value_pnl,
         "midgame_value_count": portfolio.midgame_value_count,
         "midgame_value_pnl": portfolio.midgame_value_pnl,
-        # Shadow simulations
-        "maker_arb_count": portfolio.maker_arb_count,
-        "maker_arb_pnl": portfolio.maker_arb_pnl,
-        "maker_value_count": portfolio.maker_value_count,
-        "maker_value_pnl": portfolio.maker_value_pnl,
-        "early_exit_tiers": portfolio.early_exit_tiers,
-        "early_exit_positions": [
-            {
-                "match_id": p.get("match_id", ""),
-                "platform": p.get("platform", ""),
-                "market_id": p.get("market_id", ""),
-                "team": p.get("team", ""),
-                "entry_price": p.get("entry_price", 0),
-                "shares": p.get("shares", 0),
-                "cost_usd": p.get("cost_usd", 0),
-                "opened_at": p.get("opened_at", 0),
-                "exited_tiers": list(p.get("exited_tiers", set())),
-            }
-            for p in portfolio.early_exit_positions
-        ],
         "positions": [
             {
                 "match_id": p.match_id,
@@ -96,37 +73,13 @@ def load_positions(portfolio) -> int:
         portfolio.arb_count = data.get("arb_count", 0)
         portfolio.arb_pnl = data.get("arb_pnl", 0.0)
         portfolio.value_count = data.get("value_count", 0)
+        portfolio.value_filled_count = data.get("value_filled_count", 0)
+        portfolio.value_edge_sum = data.get("value_edge_sum", 0.0)
         portfolio.value_pnl = data.get("value_pnl", 0.0)
-        # 4-bucket stats
-        portfolio.pregame_arb_count = data.get("pregame_arb_count", 0)
-        portfolio.pregame_arb_pnl = data.get("pregame_arb_pnl", 0.0)
-        portfolio.midgame_arb_count = data.get("midgame_arb_count", 0)
-        portfolio.midgame_arb_pnl = data.get("midgame_arb_pnl", 0.0)
         portfolio.pregame_value_count = data.get("pregame_value_count", 0)
         portfolio.pregame_value_pnl = data.get("pregame_value_pnl", 0.0)
         portfolio.midgame_value_count = data.get("midgame_value_count", 0)
         portfolio.midgame_value_pnl = data.get("midgame_value_pnl", 0.0)
-        # Shadow simulations
-        portfolio.maker_arb_count = data.get("maker_arb_count", 0)
-        portfolio.maker_arb_pnl = data.get("maker_arb_pnl", 0.0)
-        portfolio.maker_value_count = data.get("maker_value_count", 0)
-        portfolio.maker_value_pnl = data.get("maker_value_pnl", 0.0)
-        portfolio.early_exit_tiers = data.get("early_exit_tiers", {})
-
-        # Restore early exit shadow positions
-        for ep_data in data.get("early_exit_positions", []):
-            ep = {
-                "match_id": ep_data.get("match_id", ""),
-                "platform": ep_data.get("platform", ""),
-                "market_id": ep_data.get("market_id", ""),
-                "team": ep_data.get("team", ""),
-                "entry_price": ep_data.get("entry_price", 0),
-                "shares": ep_data.get("shares", 0),
-                "cost_usd": ep_data.get("cost_usd", 0),
-                "opened_at": ep_data.get("opened_at", 0),
-                "exited_tiers": set(ep_data.get("exited_tiers", [])),
-            }
-            portfolio.early_exit_positions.append(ep)
 
         # Restore open positions
         from live_bot.portfolio import Position
@@ -150,8 +103,10 @@ def load_positions(portfolio) -> int:
 
         loaded = len(portfolio.positions)
         logger.info(
-            "Loaded %d positions (balance=$%.2f, P&L=$%.2f)",
+            "Loaded %d positions (balance=$%.2f, P&L=$%.2f, filled=%d, avg_edge=%.1f%%)",
             loaded, portfolio.current_balance, portfolio.total_pnl,
+            portfolio.value_filled_count,
+            portfolio.value_edge_sum / portfolio.value_filled_count if portfolio.value_filled_count else 0,
         )
         return loaded
 
