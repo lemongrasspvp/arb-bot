@@ -34,6 +34,12 @@ SPORT_TAGS = {
     # Note: EuroLeague + NBL have no active Polymarket markets (no tags exist)
 }
 
+# Sports that use series slugs instead of tag IDs on Polymarket
+SPORT_SERIES = {
+    "nba": "nba-2026",
+    "nhl": "nhl-2026",
+}
+
 # Concurrent CLOB fetches — Polymarket CLOB is generous with rate limits
 CLOB_WORKERS = 15
 
@@ -346,6 +352,62 @@ def fetch_markets() -> list[PolymarketEvent]:
                         })
 
         logger.info("Gamma %s (tag %d): %d events found", sport, tag_id, len(event_list))
+
+    # Step 1b: Fetch series-based sports (NBA, NHL) via markets endpoint
+    # The Gamma events API doesn't filter by series_slug reliably, so we
+    # query the markets endpoint directly and filter by slug prefix.
+    for sport, slug_prefix in SPORT_SERIES.items():
+        sport_prefix = sport + "-"  # e.g. "nba-", "nhl-"
+        try:
+            time.sleep(0.5)
+            # Fetch high-volume active markets; NBA/NHL slugs start with "nba-"/"nhl-"
+            resp = session.get(
+                f"{GAMMA_BASE}/markets",
+                params={
+                    "closed": "false",
+                    "limit": 500,
+                    "order": "volume24hr",
+                    "ascending": "false",
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            all_markets = resp.json()
+        except requests.RequestException:
+            logger.exception("Failed to fetch gamma markets for %s", sport)
+            continue
+
+        sport_count = 0
+        for market in all_markets:
+            slug = market.get("slug", "")
+            if not slug.startswith(sport_prefix):
+                continue
+
+            question = market.get("question", "")
+            cid = market.get("conditionId", "")
+            if not cid:
+                continue
+
+            sport_count += 1
+            if _is_match_winner_market(question):
+                gamma_markets.append({
+                    "condition_id": cid,
+                    "question": question,
+                    "slug": slug,
+                    "market_type": "moneyline",
+                })
+            elif _is_totals_market(question):
+                line = _extract_line(question)
+                if line > 0:
+                    gamma_markets.append({
+                        "condition_id": cid,
+                        "question": question,
+                        "slug": slug,
+                        "market_type": "totals",
+                        "handicap": line,
+                    })
+
+        logger.info("Gamma %s (slug prefix %s): %d markets found", sport, sport_prefix, sport_count)
 
     ml_count = sum(1 for g in gamma_markets if g.get("market_type") == "moneyline")
     totals_count = sum(1 for g in gamma_markets if g.get("market_type") == "totals")

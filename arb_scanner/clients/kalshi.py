@@ -26,6 +26,9 @@ MATCH_SERIES = [
     "KXNCAAMBGAME",      # NCAA Men's Basketball
     "KXEUROLEAGUEGAME",  # EuroLeague
     "KXNBLGAME",         # NBL (Australia)
+    "KXNBAGAME",         # NBA
+    # Ice Hockey
+    "KXNHLGAME",         # NHL
 ]
 
 
@@ -169,6 +172,10 @@ def _series_to_sport(series: str) -> str:
         return "euroleague"
     if "NBL" in series:
         return "nbl"
+    if "NBA" in series:
+        return "nba"
+    if "NHL" in series:
+        return "nhl"
     return "other"
 
 

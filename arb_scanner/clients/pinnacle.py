@@ -26,7 +26,8 @@ SPORT_CONFIGS = [
     (12, ["CS2", "League of Legends", "Dota 2", "Valorant", "Call of Duty"]),  # Esports
     (22, ["UFC"]),                                                               # MMA
     (33, ["ATP", "WTA"]),                                                        # Tennis
-    (4, ["NCAA", "Europe - Euroleague"]),                                          # Basketball (Australian NBL not on Pinnacle)
+    (4, ["NCAA", "Europe - Euroleague", "NBA"]),                                  # Basketball
+    (19, ["NHL"]),                                                                # Ice Hockey
 ]
 
 HEADERS = {
@@ -107,6 +108,10 @@ def _league_to_sport(league_name: str) -> str:
         return "ncaab"
     if "Euroleague" in ln:
         return "euroleague"
+    if ln.startswith("NBA"):
+        return "nba"
+    if ln.startswith("NHL"):
+        return "nhl"
     return "other"
 
 
