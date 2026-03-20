@@ -889,15 +889,19 @@ class ArbEngine:
             # recently — the price doesn't need to have *changed*, just confirmed.
             MARKET_STALE_LIMIT = 60  # seconds
 
-            # Don't count persistence on seeded-only prices — they come from
-            # the scanner's snapshot and may not reflect the real executable ask.
-            # Wait for a real feed update to confirm the price first.
+            # Seeded prices come from the scanner snapshot — less trustworthy
+            # than real feed data. Allow them after a grace period (30s) to give
+            # feeds time to connect and confirm. If no update comes, the seeded
+            # price is likely still valid (quiet market, no book changes).
+            SEED_GRACE_SECONDS = 30
             if cached.get("seeded"):
-                logger.debug(
-                    "Value persistence skipped (seeded price): %s %s — waiting for real feed update",
-                    team_name, platform,
-                )
-                continue
+                seed_age = now - cached.get("timestamp", now)
+                if seed_age < SEED_GRACE_SECONDS:
+                    logger.debug(
+                        "Value persistence skipped (seeded price, %.0fs old): %s %s",
+                        seed_age, team_name, platform,
+                    )
+                    continue
 
             if persistence is None:
                 # First sighting — record observation 1
