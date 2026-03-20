@@ -191,14 +191,14 @@ class PaperPortfolio:
     def record_value_trade(
         self, trade: Trade, market_id: str = "", condition_id: str = ""
     ) -> None:
-        """Record a value bet (single leg)."""
+        """Record a filled value bet (single leg)."""
         self._check_daily_reset()
         self.trades.append(trade)
         self.value_count += 1
+        self.value_filled_count += 1
         self.last_trade_time = trade.timestamp
 
-        if trade.simulated and trade.would_fill:
-            self.value_filled_count += 1
+        if trade.simulated:
             self.value_edge_sum += trade.edge_pct
             timing = trade.timing or "pregame"
             if timing == "pregame":

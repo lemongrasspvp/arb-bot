@@ -1100,6 +1100,15 @@ class ArbEngine:
             latency_ms=latency,
         )
 
+        # Only record filled trades as positions and in the trade log
+        if not filled:
+            logger.debug(
+                "VALUE_REJECTED (no fill): %s %s@%s at %.0f¢ edge=%.1f%%",
+                team_name, platform, match.match_id,
+                market_price * 100, edge * 100,
+            )
+            return
+
         # Pass market_id and condition_id for settlement tracking
         self.portfolio.record_value_trade(
             trade,
@@ -1107,7 +1116,7 @@ class ArbEngine:
             condition_id=match.poly_condition_id if platform == "polymarket" else "",
         )
         log_trade(
-            "VALUE_BET" if filled else "VALUE_REJECTED", "VALUE",
+            "VALUE_BET", "VALUE",
             match_name=trade.match_name, match_id=match.match_id,
             platform_a=platform, team_a=team_name, price_a=market_price,
             edge_pct=edge * 100, pinnacle_prob=pin_prob,
