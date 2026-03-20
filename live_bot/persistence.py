@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 from pathlib import Path
 
 from live_bot.config import POSITIONS_FILE_PATH, TRADE_LOG_PATH
@@ -9,6 +10,68 @@ from live_bot.config import POSITIONS_FILE_PATH, TRADE_LOG_PATH
 logger = logging.getLogger(__name__)
 
 POSITIONS_FILE = Path(POSITIONS_FILE_PATH)
+
+
+def maybe_reset_simulation(portfolio) -> bool:
+    """If RESET_SIMULATION env var is set, wipe all state and start fresh.
+
+    Set RESET_SIMULATION=1 in Railway env vars, then remove it after one deploy.
+    Optionally set RESET_BALANCE to control starting balance (default: portfolio.starting_balance).
+    """
+    if not os.getenv("RESET_SIMULATION"):
+        return False
+
+    balance = float(os.getenv("RESET_BALANCE", str(portfolio.starting_balance)))
+    logger.warning("🔄 RESET_SIMULATION triggered — wiping all state, starting at $%.0f", balance)
+
+    # Wipe positions file
+    fresh = {
+        "balance": balance,
+        "starting_balance": balance,
+        "total_pnl": 0.0, "daily_pnl": 0.0,
+        "arb_count": 0, "arb_pnl": 0.0,
+        "value_count": 0, "value_filled_count": 0,
+        "value_edge_sum": 0.0, "value_pnl": 0.0,
+        "pregame_arb_count": 0, "pregame_arb_pnl": 0.0,
+        "midgame_arb_count": 0, "midgame_arb_pnl": 0.0,
+        "pregame_value_count": 0, "pregame_value_pnl": 0.0,
+        "midgame_value_count": 0, "midgame_value_pnl": 0.0,
+        "maker_arb_count": 0, "maker_arb_pnl": 0.0,
+        "maker_value_count": 0, "maker_value_pnl": 0.0,
+        "early_exit_tiers": {},
+        "positions": [],
+    }
+    try:
+        POSITIONS_FILE.write_text(json.dumps(fresh, indent=2))
+    except OSError:
+        logger.exception("Failed to write reset positions file")
+
+    # Wipe trade log
+    trade_log = Path(TRADE_LOG_PATH)
+    try:
+        trade_log.write_text("")
+    except OSError:
+        logger.exception("Failed to wipe trade log")
+
+    # Reset portfolio in-memory
+    portfolio.current_balance = balance
+    portfolio.starting_balance = balance
+    portfolio.total_pnl = 0.0
+    portfolio.daily_pnl = 0.0
+    portfolio.arb_count = 0
+    portfolio.arb_pnl = 0.0
+    portfolio.value_count = 0
+    portfolio.value_filled_count = 0
+    portfolio.value_edge_sum = 0.0
+    portfolio.value_pnl = 0.0
+    portfolio.pregame_value_count = 0
+    portfolio.pregame_value_pnl = 0.0
+    portfolio.midgame_value_count = 0
+    portfolio.midgame_value_pnl = 0.0
+    portfolio.positions.clear()
+
+    logger.warning("✅ Simulation reset complete — $%.0f balance, 0 positions, trade log wiped", balance)
+    return True
 
 
 def save_positions(portfolio) -> None:

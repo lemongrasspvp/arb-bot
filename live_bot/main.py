@@ -263,10 +263,16 @@ async def run_bot(live: bool = False) -> None:
 
     # Step 3: Initialize portfolio (restore from disk if available)
     portfolio = PaperPortfolio()
-    loaded = load_positions(portfolio)
-    if loaded:
-        console.print(f"[green]Restored {loaded} open positions from disk[/green]")
-        console.print(f"[dim]  Balance: ${portfolio.current_balance:.2f} | P&L: ${portfolio.total_pnl:.2f}[/dim]")
+
+    # Check for simulation reset (set RESET_SIMULATION=1 env var to trigger)
+    from live_bot.persistence import maybe_reset_simulation
+    if maybe_reset_simulation(portfolio):
+        console.print("[bold red]🔄 Simulation reset — fresh start[/bold red]")
+    else:
+        loaded = load_positions(portfolio)
+        if loaded:
+            console.print(f"[green]Restored {loaded} open positions from disk[/green]")
+            console.print(f"[dim]  Balance: ${portfolio.current_balance:.2f} | P&L: ${portfolio.total_pnl:.2f}[/dim]")
 
     # Backfill counters from trade log if needed (handles deploys with old positions format)
     from live_bot.persistence import backfill_counters
