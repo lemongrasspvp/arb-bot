@@ -105,6 +105,7 @@ def save_positions(portfolio) -> None:
                 "strategy": p.strategy,
                 "timing": p.timing,
                 "condition_id": p.condition_id,
+                "pinnacle_prob_at_entry": p.pinnacle_prob_at_entry,
             }
             for p in portfolio.positions
         ],
@@ -168,6 +169,7 @@ def load_positions(portfolio) -> int:
                 strategy=p_data["strategy"],
                 timing=p_data.get("timing", "pregame"),
                 condition_id=p_data.get("condition_id", ""),
+                pinnacle_prob_at_entry=p_data.get("pinnacle_prob_at_entry", 0.0),
             )
             portfolio.positions.append(pos)
 
