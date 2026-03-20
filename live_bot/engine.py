@@ -838,9 +838,12 @@ class ArbEngine:
             if match.pinnacle_implied_a > 0 and match.pinnacle_implied_b > 0:
                 pin_margin = match.pinnacle_implied_a + match.pinnacle_implied_b - 1.0
                 if pin_margin > 0.03:
-                    # e.g. 7% margin → 4% excess → edge * (1 - 0.04/0.10) = edge * 0.6
+                    # Margin is split across both outcomes, so per-side
+                    # uncertainty is ~half the total excess margin.
+                    # e.g. 8% margin → 5% excess → per-side 2.5% → 25% discount
                     excess = pin_margin - 0.03
-                    discount = min(excess / 0.10, 0.5)  # cap discount at 50%
+                    per_side_excess = excess / 2.0
+                    discount = min(per_side_excess / 0.10, 0.5)  # cap at 50%
                     edge *= (1.0 - discount)
                     logger.debug(
                         "Margin discount: %s margin=%.1f%% excess=%.1f%% edge reduced to %.1f%%",
