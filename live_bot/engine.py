@@ -914,7 +914,9 @@ class ArbEngine:
                 continue
 
             # Size using Kelly criterion
-            size = kelly_size(edge, pin_prob, self.portfolio.total_portfolio_value)
+            # Use cash balance (not total portfolio) so locked capital in
+            # pending-resolution positions naturally reduces bet sizing.
+            size = kelly_size(edge, pin_prob, self.portfolio.current_balance)
             if size < 1.0:
                 continue
 
