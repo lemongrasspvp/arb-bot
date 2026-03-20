@@ -38,6 +38,7 @@ SPORT_TAGS = {
 SPORT_SERIES = {
     "nba": "nba-2026",
     "nhl": "nhl-2026",
+    "mlb": "mlb-2026",
 }
 
 # Concurrent CLOB fetches — Polymarket CLOB is generous with rate limits

@@ -28,6 +28,7 @@ SPORT_CONFIGS = [
     (33, ["ATP", "WTA"]),                                                        # Tennis
     (4, ["NCAA", "Europe - Euroleague", "NBA"]),                                  # Basketball
     (19, ["NHL"]),                                                                # Ice Hockey
+    (3, ["MLB"]),                                                                  # Baseball
 ]
 
 HEADERS = {
@@ -112,6 +113,8 @@ def _league_to_sport(league_name: str) -> str:
         return "nba"
     if ln.startswith("NHL"):
         return "nhl"
+    if ln.startswith("MLB"):
+        return "mlb"
     return "other"
 
 

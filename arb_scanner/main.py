@@ -95,6 +95,8 @@ def _detect_sport(slug_lower: str, q_lower: str) -> str:
         return "nba"
     if "nhl" in slug_lower:
         return "nhl"
+    if "mlb" in slug_lower:
+        return "mlb"
     return "cs2"
 
 
