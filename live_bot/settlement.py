@@ -50,8 +50,13 @@ async def settlement_loop(
                     # Not yet resolved
                     continue
 
-                # CLV: capture Pinnacle closing line at settlement time
-                pinnacle_prob_at_close = _get_pinnacle_closing_prob(pos, registry)
+                # CLV: use the last Pinnacle prob captured while the line was
+                # still live (updated each poll in engine). Falls back to registry
+                # lookup, but that usually returns 0 since Pinnacle removes the
+                # line once the match starts.
+                pinnacle_prob_at_close = pos.pinnacle_prob_latest
+                if pinnacle_prob_at_close <= 0:
+                    pinnacle_prob_at_close = _get_pinnacle_closing_prob(pos, registry)
                 clv = 0.0
                 if pos.pinnacle_prob_at_entry > 0 and pinnacle_prob_at_close > 0:
                     # CLV = closing prob - entry price

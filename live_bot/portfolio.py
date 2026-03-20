@@ -53,6 +53,7 @@ class Position:
     timing: str = ""       # "pregame" or "midgame"
     condition_id: str = ""  # Polymarket condition_id (for resolution lookups)
     pinnacle_prob_at_entry: float = 0.0  # Pinnacle no-vig prob when bet was placed (for CLV)
+    pinnacle_prob_latest: float = 0.0    # Last known Pinnacle prob (updated each poll, for closing line)
 
 
 @dataclass

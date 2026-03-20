@@ -296,6 +296,23 @@ class ArbEngine:
             now = time.time()
             if ENABLE_VALUE and now - self._last_pinnacle_scan > 5.0:
                 self._last_pinnacle_scan = now
+
+                # Update CLV: keep pinnacle_prob_latest fresh on open positions
+                for pos in self.portfolio.positions:
+                    for m in self.registry.matches.values():
+                        pin_prob = 0.0
+                        if m.poly_token_id_a == pos.market_id or (
+                            pos.platform == "kalshi" and m.kalshi_ticker_a == pos.market_id
+                        ):
+                            pin_prob = m.pinnacle_prob_a
+                        elif m.poly_token_id_b == pos.market_id or (
+                            pos.platform == "kalshi" and m.kalshi_ticker_b == pos.market_id
+                        ):
+                            pin_prob = m.pinnacle_prob_b
+                        if pin_prob > 0:
+                            pos.pinnacle_prob_latest = pin_prob
+                            break
+
                 for m in self.registry.matches.values():
                     await self._check_value(m)
             return
