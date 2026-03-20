@@ -484,6 +484,25 @@ def build_registry_from_scanner() -> MarketRegistry:
         if match.poly_token_id_b:
             registry._poly_to_match[match.poly_token_id_b] = (match_id, "b")
 
+    # ── Post-processing: promote DISCOVERY_OK → EXECUTION_OK ──
+    # Matches that have Pinnacle reference probs summing to ~1.0 and at least
+    # one tradeable platform are safe to bet, even if the matcher's fuzzy
+    # confidence was low (common for traditional sports where Poly/Kalshi use
+    # short names like "Hurricanes" but Pinnacle uses "CAR Hurricanes").
+    promoted = 0
+    for m in registry.matches.values():
+        if m.confidence_tier != "DISCOVERY_OK":
+            continue
+        has_platform = bool(m.poly_token_id_a or m.kalshi_ticker_a)
+        has_both_pin = m.pinnacle_prob_a > 0 and m.pinnacle_prob_b > 0
+        if has_platform and has_both_pin:
+            prob_sum = m.pinnacle_prob_a + m.pinnacle_prob_b
+            if 0.90 <= prob_sum <= 1.10:
+                m.confidence_tier = "EXECUTION_OK"
+                promoted += 1
+    if promoted:
+        logger.info("Promoted %d DISCOVERY_OK → EXECUTION_OK (Pinnacle-validated)", promoted)
+
     exec_ok = sum(1 for m in registry.matches.values() if m.confidence_tier == "EXECUTION_OK")
     logger.info(
         "Registry built: %d tracked matches (%d EXECUTION_OK, %d DISCOVERY_OK)",
