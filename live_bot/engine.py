@@ -839,15 +839,17 @@ class ArbEngine:
                 pin_margin = match.pinnacle_implied_a + match.pinnacle_implied_b - 1.0
                 if pin_margin > 0.03:
                     # Margin is split across both outcomes, so per-side
-                    # uncertainty is ~half the total excess margin.
-                    # e.g. 8% margin → 5% excess → per-side 2.5% → 25% discount
+                    # de-vig uncertainty is ~half the total excess margin.
+                    # Subtract this flat amount from edge (not proportional).
+                    # e.g. 8% margin → 5% excess → per-side 2.5% → edge - 2.5%
                     excess = pin_margin - 0.03
                     per_side_excess = excess / 2.0
-                    discount = min(per_side_excess / 0.10, 0.5)  # cap at 50%
-                    edge *= (1.0 - discount)
+                    edge_before = edge
+                    edge = max(0.0, edge - per_side_excess)
                     logger.debug(
-                        "Margin discount: %s margin=%.1f%% excess=%.1f%% edge reduced to %.1f%%",
-                        team_name, pin_margin * 100, excess * 100, edge * 100,
+                        "Margin adjustment: %s margin=%.1f%% per-side=%.1f%% edge %.1f%% → %.1f%%",
+                        team_name, pin_margin * 100, per_side_excess * 100,
+                        edge_before * 100, edge * 100,
                     )
 
             # Dynamic edge threshold: stricter for midgame
