@@ -15,6 +15,7 @@ from live_bot.config import (
     MAX_BET_PCT,
     MAX_DAILY_LOSS_PCT,
     MIN_WIN_PROB,
+    FULL_SIZE_PROB,
     TIER_MID_PROB,
     TIER_LOW_MAX_USD,
     TIER_HIGH_MAX_USD,
@@ -94,12 +95,11 @@ def kelly_size(
     win_prob: float,
     balance: float,
 ) -> float:
-    """Calculate half-Kelly optimal bet size with win probability tiers.
+    """Calculate half-Kelly optimal bet size with smooth underdog scaling.
 
-    Tiers (configurable in .env):
-        <30% win prob  → skip (too much variance)
-        30-50% win prob → max $25 (medium confidence)
-        >50% win prob  → max $50 (high confidence)
+    Below FULL_SIZE_PROB (default 35%), size is linearly scaled down to
+    reduce variance on longshot bets. The ramp goes from 20% at MIN_WIN_PROB
+    to 100% at FULL_SIZE_PROB, with no harsh tier jumps.
 
     Args:
         edge: (pinnacle_prob / market_price) - 1  (e.g. 0.10 = 10% edge)
@@ -107,26 +107,18 @@ def kelly_size(
         balance: Current portfolio balance
 
     Returns:
-        Optimal bet size in USD, capped by tier.
+        Optimal bet size in USD.
     """
     if edge <= 0 or win_prob <= 0 or win_prob >= 1:
         return 0.0
 
-    # Tier 0: Skip low-probability bets entirely
+    # Skip extreme longshots entirely
     if win_prob < MIN_WIN_PROB:
         logger.debug(
             "Skipping bet: win_prob=%.0f%% below minimum %.0f%%",
             win_prob * 100, MIN_WIN_PROB * 100,
         )
         return 0.0
-
-    # Determine tier max
-    if win_prob >= TIER_MID_PROB:
-        tier_max = TIER_HIGH_MAX_USD   # high confidence
-        tier_name = "HIGH"
-    else:
-        tier_max = TIER_LOW_MAX_USD    # medium confidence
-        tier_name = "MID"
 
     # Kelly formula: f* = (bp - q) / b
     # where b = net odds received, p = win prob, q = 1 - p
@@ -146,13 +138,29 @@ def kelly_size(
     # Half-Kelly for safety
     size = effective_balance * kelly * KELLY_FRACTION
 
-    # Cap by tier, global max, and % of portfolio
+    # Smooth underdog scaling: linear ramp from 20% to 100% of size
+    # between MIN_WIN_PROB and FULL_SIZE_PROB.
+    # e.g. with defaults (15% → 35%):
+    #   15% prob → 20% size, 20% → 40%, 25% → 60%, 30% → 80%, 35%+ → 100%
+    if win_prob < FULL_SIZE_PROB:
+        ramp_floor = 0.20  # minimum 20% of normal size
+        ramp = ramp_floor + (1.0 - ramp_floor) * (
+            (win_prob - MIN_WIN_PROB) / (FULL_SIZE_PROB - MIN_WIN_PROB)
+        )
+        ramp = max(ramp_floor, min(1.0, ramp))
+        size *= ramp
+        logger.debug(
+            "Underdog ramp: prob=%.0f%% → %.0f%% of normal size",
+            win_prob * 100, ramp * 100,
+        )
+
+    # Cap by global max and % of portfolio
     max_bet_usd = effective_balance * (MAX_BET_PCT / 100)
-    size = min(size, tier_max, MAX_POSITION_USD, max_bet_usd)
+    size = min(size, MAX_POSITION_USD, max_bet_usd)
 
     logger.debug(
-        "Kelly sizing: prob=%.0f%% edge=%.1f%% kelly=%.4f → $%.2f (tier=%s, max=$%.0f)",
-        win_prob * 100, edge * 100, kelly, size, tier_name, tier_max,
+        "Kelly sizing: prob=%.0f%% edge=%.1f%% kelly=%.4f → $%.2f",
+        win_prob * 100, edge * 100, kelly, size,
     )
 
     # Floor at $0

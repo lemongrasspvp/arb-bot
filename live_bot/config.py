@@ -65,7 +65,10 @@ COOLDOWN_SECONDS = float(os.getenv("COOLDOWN_SECONDS", "5"))
 
 # ── Win probability filter (value bets only) ──────────────────────────
 # Bets below MIN_WIN_PROB are skipped entirely (too much variance).
-MIN_WIN_PROB = float(os.getenv("MIN_WIN_PROB", "0.30"))          # skip below 30%
+MIN_WIN_PROB = float(os.getenv("MIN_WIN_PROB", "0.15"))          # skip below 15%
+# Below FULL_SIZE_PROB, size is linearly scaled down to dampen variance.
+# e.g. 15% prob → 20% of normal size, 25% → 60%, 35%+ → 100%.
+FULL_SIZE_PROB = float(os.getenv("FULL_SIZE_PROB", "0.35"))
 # Tier caps removed — depth-aware sizing is the real cap now.
 TIER_MID_PROB = float(os.getenv("TIER_MID_PROB", "0.50"))
 TIER_LOW_MAX_USD = float(os.getenv("TIER_LOW_MAX_USD", "999999"))

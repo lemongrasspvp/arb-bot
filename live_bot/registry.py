@@ -87,12 +87,18 @@ class MarketRegistry:
         return tickers
 
     def seed_initial_price(self, platform: str, market_id: str, ask_price: float) -> None:
-        """Store an initial ask price from the scanner for engine cache seeding."""
+        """Store an initial ask price from the scanner for engine cache seeding.
+
+        Seeded prices are marked as non-executable (seeded=True) so the engine
+        can show them on the dashboard but won't count them toward edge
+        persistence until a real feed update confirms the price.
+        """
         if ask_price > 0 and market_id:
             self.initial_prices[platform][market_id] = {
                 "best_ask": ask_price,
                 "best_bid": 0.0,
                 "timestamp": time.time(),
+                "seeded": True,
             }
 
     def get_match_for_market(self, platform: str, market_id: str) -> tuple[TrackedMatch | None, str]:

@@ -268,6 +268,8 @@ class ArbEngine:
         if update.get("no_vig_prob", 0) > 0:
             existing["no_vig_prob"] = update["no_vig_prob"]
         existing["timestamp"] = update["timestamp"]
+        # Real feed update clears the seeded flag — price is now confirmed
+        existing.pop("seeded", None)
         self.prices[platform][market_id] = existing
 
         # Find which tracked match this belongs to
@@ -881,6 +883,16 @@ class ArbEngine:
             # Market data is considered healthy if we've heard from the feed
             # recently — the price doesn't need to have *changed*, just confirmed.
             MARKET_STALE_LIMIT = 60  # seconds
+
+            # Don't count persistence on seeded-only prices — they come from
+            # the scanner's snapshot and may not reflect the real executable ask.
+            # Wait for a real feed update to confirm the price first.
+            if cached.get("seeded"):
+                logger.debug(
+                    "Value persistence skipped (seeded price): %s %s — waiting for real feed update",
+                    team_name, platform,
+                )
+                continue
 
             if persistence is None:
                 # First sighting — record observation 1
