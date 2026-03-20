@@ -941,7 +941,7 @@ class ArbEngine:
             # Kelly bankroll ramps up with proven profit for smooth growth:
             #   start at $1500, grow $1 per $1 of profit → exponential curve
             cash = self.portfolio.current_balance
-            kelly_bankroll = min(cash, self._kelly_base + max(0.0, self.portfolio.total_pnl))
+            kelly_bankroll = min(cash, self._kelly_base + max(0.0, self.portfolio.total_pnl) * 0.5)
             size = kelly_size(edge, pin_prob, kelly_bankroll)
             if size < 1.0:
                 continue
