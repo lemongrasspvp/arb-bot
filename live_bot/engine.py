@@ -869,8 +869,17 @@ class ArbEngine:
                         edge_before * 100, edge * 100,
                     )
 
-            # Dynamic edge threshold: stricter for midgame
-            min_edge = MIDGAME_VALUE_EDGE_PCT / 100 if timing == "midgame" else MIN_VALUE_EDGE_PCT / 100
+            # Dynamic edge threshold: stricter for midgame and longshots.
+            # Below 30% win prob, min edge ramps up by 0.60% for each 1% drop
+            # in probability — longshot de-vig is noisier and small edges are
+            # easily destroyed by pre-game variance.
+            # e.g. 30%+ → 4%, 25% → 7%, 20% → 10%, 15% → 13%
+            base_min_edge = MIDGAME_VALUE_EDGE_PCT / 100 if timing == "midgame" else MIN_VALUE_EDGE_PCT / 100
+            if pin_prob < 0.30:
+                longshot_extra = (0.30 - pin_prob) * 0.60
+                min_edge = base_min_edge + longshot_extra
+            else:
+                min_edge = base_min_edge
 
             if edge < min_edge:
                 continue
