@@ -180,8 +180,9 @@ class MarketRegistry:
             # Skip if academy/sub-roster mismatch: "FURIA" should not update "FURIA fe"
             if self._is_academy_mismatch(norm, norm_a) or self._is_academy_mismatch(norm, norm_b):
                 continue
+            # token_set_ratio handles subset matching (e.g. "Hurricanes" → "CAR Hurricanes")
             # Threshold 85 prevents partial name collisions like "FURIA" matching "FURIA fe"
-            if fuzz.token_sort_ratio(norm, norm_a) > 85:
+            if fuzz.token_set_ratio(norm, norm_a) > 85:
                 match.pinnacle_last_seen_a = now  # always update: we got data
                 # Freeze detection: same odds as last poll = likely suspended
                 if match._prev_pinnacle_prob_a > 0 and abs(no_vig_prob - match._prev_pinnacle_prob_a) < 0.001:
@@ -197,7 +198,7 @@ class MarketRegistry:
                 match.pinnacle_prob_a = no_vig_prob
                 if implied_prob > 0:
                     match.pinnacle_implied_a = implied_prob
-            elif fuzz.token_sort_ratio(norm, norm_b) > 85:
+            elif fuzz.token_set_ratio(norm, norm_b) > 85:
                 match.pinnacle_last_seen_b = now  # always update: we got data
                 if match._prev_pinnacle_prob_b > 0 and abs(no_vig_prob - match._prev_pinnacle_prob_b) < 0.001:
                     match.pinnacle_frozen_b = True
@@ -334,12 +335,14 @@ def build_registry_from_scanner() -> MarketRegistry:
         pin_lookup[_normalize(o.team_name)] = (o.implied_prob, o.sport, o.event_name)
 
     def _find_pinnacle_prob(team_name: str, opponent_name: str, sport: str) -> float:
-        """Find Pinnacle no-vig prob, matching on event context (both teams)."""
+        """Find Pinnacle no-vig prob, matching on event context (both teams).
+
+        Uses token_set_ratio for the team name so that subset matches work
+        (e.g. "Hurricanes" matches "CAR Hurricanes" at 100%).
+        """
         norm_team = _normalize(team_name)
         norm_opp = _normalize(opponent_name)
 
-        # Strategy 1: Match via Poly↔Pin or Kalshi↔Pin matched pairs
-        # (most reliable — the matcher already validated both sides)
         best_prob = 0.0
         best_score = 0
 
@@ -352,12 +355,14 @@ def build_registry_from_scanner() -> MarketRegistry:
             if sport and pin_sport and sport != pin_sport:
                 continue
 
-            team_score = fuzz.token_sort_ratio(norm_team, pin_name)
+            # token_set_ratio handles subset matching — "hurricanes" is a
+            # subset of "car hurricanes" → 100%.  Prevents city-prefix
+            # abbreviations (CAR, TOR, FLA, etc.) from breaking the match.
+            team_score = fuzz.token_set_ratio(norm_team, pin_name)
             # Also check if the opponent appears in the event name
-            # Use partial_ratio for substring matching (e.g. "Players" in "FOLHA AMARELA vs Players")
             event_has_opponent = fuzz.partial_ratio(norm_opp, pin_event) > 50
 
-            if team_score > 75 and event_has_opponent and team_score > best_score:
+            if team_score >= 75 and event_has_opponent and team_score > best_score:
                 best_prob = info["prob"]
                 best_score = team_score
 
