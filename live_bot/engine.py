@@ -826,6 +826,23 @@ class ArbEngine:
             # Calculate edge using VWAP-inclusive effective price
             edge = (pin_prob / effective_price) - 1.0
 
+            # Discount edge based on Pinnacle margin — high-vig markets
+            # have noisier de-vigged probs so our edge estimate is less reliable.
+            # Margin = implied_a + implied_b - 1. Typical Pinnacle: 2-4%.
+            # Discount: reduce edge proportionally to excess margin above 3%.
+            pin_margin = 0.0
+            if match.pinnacle_implied_a > 0 and match.pinnacle_implied_b > 0:
+                pin_margin = match.pinnacle_implied_a + match.pinnacle_implied_b - 1.0
+                if pin_margin > 0.03:
+                    # e.g. 7% margin → 4% excess → edge * (1 - 0.04/0.10) = edge * 0.6
+                    excess = pin_margin - 0.03
+                    discount = min(excess / 0.10, 0.5)  # cap discount at 50%
+                    edge *= (1.0 - discount)
+                    logger.debug(
+                        "Margin discount: %s margin=%.1f%% excess=%.1f%% edge reduced to %.1f%%",
+                        team_name, pin_margin * 100, excess * 100, edge * 100,
+                    )
+
             # Dynamic edge threshold: stricter for midgame
             min_edge = MIDGAME_VALUE_EDGE_PCT / 100 if timing == "midgame" else MIN_VALUE_EDGE_PCT / 100
 
@@ -833,8 +850,8 @@ class ArbEngine:
                 continue
 
             logger.info(
-                "Value edge found: %s %s pin=%.0f¢ mkt=%.0f¢ edge=%.1f%%",
-                team_name, platform, pin_prob * 100, effective_price * 100, edge * 100,
+                "Value edge found: %s %s pin=%.0f¢ mkt=%.0f¢ edge=%.1f%% margin=%.1f%%",
+                team_name, platform, pin_prob * 100, effective_price * 100, edge * 100, pin_margin * 100,
             )
 
             # Sanity cap: edges above 20% are almost certainly stale refs or bad matches

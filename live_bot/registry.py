@@ -44,6 +44,9 @@ class TrackedMatch:
     # actively moving (steam move / sharp action) and our reference is unreliable.
     pinnacle_moving_a: bool = False
     pinnacle_moving_b: bool = False
+    # Raw implied probs (with vig) for margin calculation
+    pinnacle_implied_a: float = 0.0
+    pinnacle_implied_b: float = 0.0
     # Two-tier matching: DISCOVERY_OK (show on dashboard only) vs EXECUTION_OK (safe to bet)
     confidence_tier: str = "DISCOVERY_OK"
 
@@ -129,7 +132,7 @@ class MarketRegistry:
 
     def update_pinnacle_price(
         self, team_name: str, sport: str, no_vig_prob: float,
-        event_name: str = "",
+        event_name: str = "", implied_prob: float = 0.0,
     ) -> None:
         """Update Pinnacle no-vig probability for a team across all matches.
 
@@ -186,6 +189,8 @@ class MarketRegistry:
                     match.pinnacle_moving_a = shift > 0.03
                 match._prev_pinnacle_prob_a = match.pinnacle_prob_a
                 match.pinnacle_prob_a = no_vig_prob
+                if implied_prob > 0:
+                    match.pinnacle_implied_a = implied_prob
             elif fuzz.token_sort_ratio(norm, norm_b) > 85:
                 match.pinnacle_last_seen_b = now  # always update: we got data
                 if match._prev_pinnacle_prob_b > 0 and abs(no_vig_prob - match._prev_pinnacle_prob_b) < 0.001:
@@ -199,6 +204,8 @@ class MarketRegistry:
                     match.pinnacle_moving_b = shift > 0.03
                 match._prev_pinnacle_prob_b = match.pinnacle_prob_b
                 match.pinnacle_prob_b = no_vig_prob
+                if implied_prob > 0:
+                    match.pinnacle_implied_b = implied_prob
 
 
 def _extract_teams_from_event(event_name: str) -> tuple[str, str] | None:

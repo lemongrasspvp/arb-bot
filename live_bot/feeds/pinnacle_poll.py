@@ -46,6 +46,7 @@ async def pinnacle_poller(
                 registry.update_pinnacle_price(
                     o.outcome_name, o.sport, o.no_vig_prob,
                     event_name=o.event_name,
+                    implied_prob=o.implied_prob,
                 )
 
                 # Also push into the price queue for the engine
@@ -55,6 +56,7 @@ async def pinnacle_poller(
                     "best_ask": o.implied_prob,   # with-vig price (what you'd pay)
                     "best_bid": 0.0,
                     "no_vig_prob": o.no_vig_prob,  # true probability
+                    "implied_prob": o.implied_prob,  # raw with-vig prob for margin calc
                     "timestamp": time.time(),
                 })
                 count += 1
