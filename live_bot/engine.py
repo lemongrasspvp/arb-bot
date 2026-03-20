@@ -194,6 +194,9 @@ class ArbEngine:
         # Track the latest Pinnacle poll timestamp globally
         self._last_pinnacle_poll_ts: float = 0.0
 
+        # Kelly ramp-up: once cash crosses $1800, unlock full Kelly permanently
+        self._kelly_unlocked: bool = False
+
         # Throttle full-registry scans on Pinnacle polls
         self._last_pinnacle_scan: float = 0.0
 
@@ -919,7 +922,10 @@ class ArbEngine:
             # Cap Kelly bankroll at $1500 until cash balance reaches $1800
             # to protect the initial bankroll during ramp-up.
             cash = self.portfolio.current_balance
-            kelly_bankroll = min(cash, 1500.0) if cash < 1800.0 else cash
+            if not self._kelly_unlocked and cash >= 1800.0:
+                self._kelly_unlocked = True
+                logger.info("Kelly ramp-up complete — unlocked full sizing at $%.0f", cash)
+            kelly_bankroll = cash if self._kelly_unlocked else min(cash, 1500.0)
             size = kelly_size(edge, pin_prob, kelly_bankroll)
             if size < 1.0:
                 continue
