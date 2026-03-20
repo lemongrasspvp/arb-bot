@@ -188,7 +188,7 @@ class ArbEngine:
 
         # Edge persistence: count-based + freshness across Pinnacle poll cycles
         # key = val_key → {"count": int, "last_pinnacle_ts": float,
-        #                   "last_market_ts": float, "last_edge": float, "first_seen": float}
+        #                   "last_edge": float, "first_seen": float}
         self._edge_persistence: dict[str, dict] = {}
 
         # Track the latest Pinnacle poll timestamp globally
@@ -878,13 +878,16 @@ class ArbEngine:
             current_mkt_ts = cached.get("timestamp", 0)
             persistence = self._edge_persistence.get(val_key)
 
+            # Market data is considered healthy if we've heard from the feed
+            # recently — the price doesn't need to have *changed*, just confirmed.
+            MARKET_STALE_LIMIT = 60  # seconds
+
             if persistence is None:
                 # First sighting — record observation 1
                 self._edge_persistence[val_key] = {
                     "count": 1,
                     "first_seen": now,
                     "last_pinnacle_ts": current_pin_ts,
-                    "last_market_ts": current_mkt_ts,
                     "last_edge": edge,
                 }
                 logger.info(
@@ -900,28 +903,34 @@ class ArbEngine:
                         "count": 1,
                         "first_seen": now,
                         "last_pinnacle_ts": current_pin_ts,
-                        "last_market_ts": current_mkt_ts,
                         "last_edge": edge,
                     }
                     continue
 
-                # Check if BOTH Pinnacle and market data are fresh since last observation
+                # Fresh Pinnacle poll required for each observation
                 pin_is_fresh = current_pin_ts > persistence["last_pinnacle_ts"]
-                mkt_is_fresh = current_mkt_ts > persistence["last_market_ts"]
+                # Market feed must be alive (recent data), but price need not have changed
+                mkt_is_healthy = (now - current_mkt_ts) < MARKET_STALE_LIMIT
 
-                if pin_is_fresh and mkt_is_fresh:
-                    # New observation with fresh data from both sources
+                if pin_is_fresh and mkt_is_healthy:
+                    # New observation with fresh Pinnacle + healthy market book
                     persistence["count"] += 1
                     persistence["last_pinnacle_ts"] = current_pin_ts
-                    persistence["last_market_ts"] = current_mkt_ts
                     persistence["last_edge"] = edge
                     logger.info(
                         "Value persistence [%d/%d]: %s %s edge=%.1f%%",
                         persistence["count"], REQUIRED_OBSERVATIONS,
                         team_name, platform, edge * 100,
                     )
+                elif not mkt_is_healthy:
+                    # Market data is stale — feed may be disconnected, don't count
+                    logger.debug(
+                        "Value persistence stalled (stale market data): %s %s — last update %.0fs ago",
+                        team_name, platform, now - current_mkt_ts,
+                    )
+                    persistence["last_edge"] = edge
                 else:
-                    # Same Pinnacle or market snapshot — don't increment, just update edge
+                    # Same Pinnacle snapshot — don't increment, just update edge
                     persistence["last_edge"] = edge
 
                 if persistence["count"] < REQUIRED_OBSERVATIONS:
