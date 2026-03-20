@@ -194,8 +194,10 @@ class ArbEngine:
         # Track the latest Pinnacle poll timestamp globally
         self._last_pinnacle_poll_ts: float = 0.0
 
-        # Kelly ramp-up: once cash crosses $1800, unlock full Kelly permanently
-        self._kelly_unlocked: bool = False
+        # Kelly ramp-up: bankroll starts at $1500 and grows with proven profit
+        # kelly_bankroll = min(cash, 1500 + max(0, total_pnl))
+        # This creates smooth exponential growth from small → large bets
+        self._kelly_base: float = 1500.0
 
         # Throttle full-registry scans on Pinnacle polls
         self._last_pinnacle_scan: float = 0.0
@@ -936,13 +938,10 @@ class ArbEngine:
             # Size using Kelly criterion
             # Use cash balance (not total portfolio) so locked capital in
             # pending-resolution positions naturally reduces bet sizing.
-            # Cap Kelly bankroll at $1500 until cash balance reaches $1800
-            # to protect the initial bankroll during ramp-up.
+            # Kelly bankroll ramps up with proven profit for smooth growth:
+            #   start at $1500, grow $1 per $1 of profit → exponential curve
             cash = self.portfolio.current_balance
-            if not self._kelly_unlocked and cash >= 1800.0:
-                self._kelly_unlocked = True
-                logger.info("Kelly ramp-up complete — unlocked full sizing at $%.0f", cash)
-            kelly_bankroll = cash if self._kelly_unlocked else min(cash, 1500.0)
+            kelly_bankroll = min(cash, self._kelly_base + max(0.0, self.portfolio.total_pnl))
             size = kelly_size(edge, pin_prob, kelly_bankroll)
             if size < 1.0:
                 continue
