@@ -53,13 +53,19 @@ async def simulate_value_fill_recheck(
         logger.debug("Fill recheck: empty book for %s", market_id[:30])
         return 0, 0.0
 
-    # Walk the book at our limit price
+    # Walk the book at our limit price + slippage tolerance.
+    # In real trading you'd place a limit 1-2¢ above the ask to account
+    # for normal book movement. Without this, the 2s recheck almost always
+    # fails because the book shifts by even 1¢.
+    SLIPPAGE_TOLERANCE = 0.02  # accept up to 2¢ above our target price
+    effective_limit = limit_price + SLIPPAGE_TOLERANCE
+
     filled_shares = 0
     total_cost = 0.0
 
     for price, size_shares in sorted(ask_levels, key=lambda x: x[0]):
-        if price > limit_price:
-            break  # Beyond our limit
+        if price > effective_limit:
+            break  # Beyond our limit + tolerance
 
         # How many shares can we take from this level?
         remaining = intended_shares - filled_shares
