@@ -354,42 +354,62 @@ def fetch_markets() -> list[PolymarketEvent]:
 
         logger.info("Gamma %s (tag %d): %d events found", sport, tag_id, len(event_list))
 
-    # Step 1b: Fetch series-based sports (NBA, NHL) via markets endpoint
-    # The Gamma events API doesn't filter by series_slug reliably, so we
-    # query the markets endpoint directly and filter by slug prefix.
-    for sport, slug_prefix in SPORT_SERIES.items():
-        sport_prefix = sport + "-"  # e.g. "nba-", "nhl-"
+    # Step 1b: Fetch series-based sports (NBA, NHL, MLB) via markets endpoint.
+    # Paginate once through all active markets and filter by slug prefix.
+    # This avoids redundant API calls (each sport would see the same pages).
+    sport_prefixes = {sport: sport + "-" for sport in SPORT_SERIES}
+    sport_counts: dict[str, int] = {sport: 0 for sport in SPORT_SERIES}
+    seen_cids: set[str] = set()
+
+    offset = 0
+    page_size = 500
+    max_pages = 8  # up to 4000 markets — enough to cover all sports including low-volume
+    consecutive_empty = 0  # pages with zero matches for ANY series sport
+
+    for _page in range(max_pages):
         try:
-            time.sleep(0.5)
-            # Fetch high-volume active markets; NBA/NHL slugs start with "nba-"/"nhl-"
+            time.sleep(0.3)
             resp = session.get(
                 f"{GAMMA_BASE}/markets",
                 params={
                     "closed": "false",
-                    "limit": 500,
+                    "limit": page_size,
+                    "offset": offset,
                     "order": "volume24hr",
                     "ascending": "false",
                 },
                 timeout=15,
             )
             resp.raise_for_status()
-            all_markets = resp.json()
+            page_markets = resp.json()
         except requests.RequestException:
-            logger.exception("Failed to fetch gamma markets for %s", sport)
-            continue
+            logger.exception("Failed to fetch gamma markets (offset %d)", offset)
+            break
 
-        sport_count = 0
-        for market in all_markets:
+        if not page_markets:
+            break
+
+        page_any_hit = False
+        for market in page_markets:
             slug = market.get("slug", "")
-            if not slug.startswith(sport_prefix):
-                continue
-
-            question = market.get("question", "")
             cid = market.get("conditionId", "")
-            if not cid:
+            if not cid or cid in seen_cids:
                 continue
 
-            sport_count += 1
+            # Check if slug matches any series sport
+            matched_sport = None
+            for sport, prefix in sport_prefixes.items():
+                if slug.startswith(prefix):
+                    matched_sport = sport
+                    break
+            if not matched_sport:
+                continue
+
+            seen_cids.add(cid)
+            page_any_hit = True
+            question = market.get("question", "")
+
+            sport_counts[matched_sport] += 1
             if _is_match_winner_market(question):
                 gamma_markets.append({
                     "condition_id": cid,
@@ -408,7 +428,21 @@ def fetch_markets() -> list[PolymarketEvent]:
                         "handicap": line,
                     })
 
-        logger.info("Gamma %s (slug prefix %s): %d markets found", sport, sport_prefix, sport_count)
+        if page_any_hit:
+            consecutive_empty = 0
+        else:
+            consecutive_empty += 1
+
+        # Stop if 3 consecutive pages had zero series-sport markets
+        if consecutive_empty >= 3:
+            break
+
+        offset += page_size
+
+    pages_fetched = _page + 1
+    for sport, count in sport_counts.items():
+        logger.info("Gamma %s (slug prefix %s-): %d markets found (shared pagination, %d pages)",
+                     sport, sport, count, pages_fetched)
 
     ml_count = sum(1 for g in gamma_markets if g.get("market_type") == "moneyline")
     totals_count = sum(1 for g in gamma_markets if g.get("market_type") == "totals")
