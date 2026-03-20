@@ -938,10 +938,10 @@ class ArbEngine:
             # Size using Kelly criterion
             # Use cash balance (not total portfolio) so locked capital in
             # pending-resolution positions naturally reduces bet sizing.
-            # Kelly bankroll ramps up with proven profit for smooth growth:
-            #   start at $1500, grow $1 per $1 of profit → exponential curve
+            # Cap at $1500 until $200 profit proves the system, then use cash.
+            # Locked capital in unresolved bets naturally limits sizing after unlock.
             cash = self.portfolio.current_balance
-            kelly_bankroll = min(cash, self._kelly_base + max(0.0, self.portfolio.total_pnl) * 0.5)
+            kelly_bankroll = cash if self.portfolio.total_pnl >= 200.0 else min(cash, self._kelly_base)
             size = kelly_size(edge, pin_prob, kelly_bankroll)
             if size < 1.0:
                 continue
