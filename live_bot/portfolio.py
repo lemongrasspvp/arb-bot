@@ -236,8 +236,16 @@ class PaperPortfolio:
                 trade.size_usd, self.current_balance,
             )
 
-    def settle_position(self, market_id: str, won: bool) -> float:
+    def settle_position(self, market_id: str, won: bool = False, *,
+                        payout_per_share: float | None = None) -> float:
         """Settle a position when the event resolves.
+
+        Args:
+            market_id: The position's market identifier.
+            won: Legacy binary win/loss (used if payout_per_share not given).
+            payout_per_share: Numeric payout in [0, 1] per share held.
+                1.0 = full win, 0.0 = full loss, 0.5 = split/cancelled.
+                If provided, overrides the `won` parameter.
 
         Returns P&L for this position.
         """
@@ -245,12 +253,14 @@ class PaperPortfolio:
         pnl = 0.0
         for i, pos in enumerate(self.positions):
             if pos.market_id == market_id:
-                if won:
-                    # Payout is $1 per contract
-                    payout = pos.size * 1.0
-                    pnl = payout - pos.cost_usd
+                # Determine payout per share
+                if payout_per_share is not None:
+                    pps = payout_per_share
                 else:
-                    pnl = -pos.cost_usd
+                    pps = 1.0 if won else 0.0
+
+                gross_payout = pos.size * pps
+                pnl = gross_payout - pos.cost_usd
                 to_remove.append(i)
 
                 if pos.strategy == "VALUE":
@@ -270,10 +280,20 @@ class PaperPortfolio:
                 self.daily_pnl += pnl
                 self.current_balance += pos.cost_usd + pnl  # return cost + profit/loss
 
+                # Determine settlement label
+                if pps >= 0.99:
+                    label = "WON"
+                elif pps <= 0.01:
+                    label = "LOST"
+                elif abs(pps - 0.5) < 0.01:
+                    label = "SPLIT"
+                else:
+                    label = f"PARTIAL@{pps:.2f}"
+
                 logger.info(
-                    "SETTLED %s: %s %s — %s | P&L=$%.2f | balance=$%.2f",
+                    "SETTLED %s: %s %s — %s (%.2f/share) | P&L=$%.2f | balance=$%.2f",
                     pos.strategy, pos.team, pos.platform,
-                    "WON" if won else "LOST", pnl, self.current_balance,
+                    label, pps, pnl, self.current_balance,
                 )
 
         for i in reversed(to_remove):

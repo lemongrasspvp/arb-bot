@@ -1,4 +1,11 @@
-"""Settlement checker — resolves open positions when markets finalize."""
+"""Settlement checker — resolves open positions when markets finalize.
+
+Supports numeric payout-per-share settlement (not just binary win/loss):
+  - 1.0 = full win
+  - 0.0 = full loss
+  - 0.5 = split / cancelled (e.g. Polymarket 50/50)
+  - any value in [0, 1] for partial payouts
+"""
 
 import asyncio
 import logging
@@ -10,9 +17,6 @@ from live_bot.config import KALSHI_REST_BASE, SETTLEMENT_CHECK_INTERVAL
 from live_bot.logger import log_trade, log_event
 
 logger = logging.getLogger(__name__)
-
-# Polymarket CLOB base
-POLY_CLOB_BASE = "https://clob.polymarket.com"
 
 
 async def settlement_loop(
@@ -45,17 +49,14 @@ async def settlement_loop(
                 break
 
             try:
-                won = await _check_resolution(pos, registry)
-                if won is None:
+                result = await _resolve_settlement_value(pos, registry)
+                if result is None:
                     # Not yet resolved
                     continue
 
-                # CLV: use the last Pinnacle prob captured while the line was
-                # still live (updated each poll in engine). Falls back to registry
-                # lookup, but that usually returns 0 since Pinnacle removes the
-                # line once the match starts.
-                # Use pre-game closing prob for CLV (not contaminated by live odds).
-                # Fall back to pinnacle_prob_latest if pregame_close wasn't captured.
+                payout_per_share, settlement_mode, settlement_source = result
+
+                # CLV computation
                 pinnacle_prob_at_close = pos.pinnacle_prob_pregame_close
                 if pinnacle_prob_at_close <= 0:
                     pinnacle_prob_at_close = pos.pinnacle_prob_latest
@@ -66,21 +67,32 @@ async def settlement_loop(
                 pin_drift = 0.0
                 pin_drift_pct = 0.0
                 if pinnacle_prob_at_close > 0 and pos.price > 0:
-                    # Trade CLV: did we buy cheaper than the sharp close?
-                    # (pinnacle_close - market_entry) / market_entry
-                    # Captures both entry edge AND subsequent line movement.
                     clv = pinnacle_prob_at_close - pos.price
                     clv_pct = clv / pos.price
                 if pos.pinnacle_prob_at_entry > 0 and pinnacle_prob_at_close > 0:
-                    # Pinnacle drift: did the sharp line move in our favor?
-                    # (pinnacle_close - pinnacle_entry) / pinnacle_entry
-                    # Measures signal quality independent of execution.
                     pin_drift = pinnacle_prob_at_close - pos.pinnacle_prob_at_entry
                     pin_drift_pct = pin_drift / pos.pinnacle_prob_at_entry
 
-                # Settle
-                pnl = portfolio.settle_position(pos.market_id, won)
+                # Settle with numeric payout
+                gross_payout = pos.size * payout_per_share
+                pnl = portfolio.settle_position(
+                    pos.market_id, payout_per_share=payout_per_share
+                )
                 settled_count += 1
+
+                # Settlement label
+                if payout_per_share >= 0.99:
+                    label = "WON"
+                    won = True
+                elif payout_per_share <= 0.01:
+                    label = "LOST"
+                    won = False
+                elif abs(payout_per_share - 0.5) < 0.01:
+                    label = "SPLIT"
+                    won = None
+                else:
+                    label = f"PARTIAL@{payout_per_share:.2f}"
+                    won = None
 
                 log_trade(
                     "SETTLEMENT",
@@ -99,6 +111,10 @@ async def settlement_loop(
                         "won": won,
                         "pnl": round(pnl, 2),
                         "balance": round(portfolio.current_balance, 2),
+                        "payout_per_share": round(payout_per_share, 4),
+                        "gross_payout": round(gross_payout, 2),
+                        "settlement_mode": settlement_mode,
+                        "settlement_source": settlement_source,
                         "pinnacle_prob_at_entry": round(pos.pinnacle_prob_at_entry, 6),
                         "pinnacle_prob_at_close": round(pinnacle_prob_at_close, 6),
                         "clv": round(clv, 4),
@@ -110,9 +126,9 @@ async def settlement_loop(
                 )
 
                 logger.info(
-                    "SETTLED: %s %s@%s — %s | P&L=$%.2f | CLV=%+.1f%% | Drift=%+.1f%%",
+                    "SETTLED: %s %s@%s — %s (%.2f/share) | P&L=$%.2f | CLV=%+.1f%% | Drift=%+.1f%%",
                     pos.team, pos.platform, pos.match_id,
-                    "WON" if won else "LOST", pnl, clv_pct * 100, pin_drift_pct * 100,
+                    label, payout_per_share, pnl, clv_pct * 100, pin_drift_pct * 100,
                 )
 
             except Exception:
@@ -130,23 +146,36 @@ async def settlement_loop(
             )
 
 
-async def _check_resolution(pos, registry) -> bool | None:
-    """Check if a position's market has resolved.
+# ── Settlement value resolvers ─────────────────────────────────────────
 
-    Returns True (won), False (lost), or None (not yet resolved).
+
+async def _resolve_settlement_value(pos, registry) -> tuple[float, str, str] | None:
+    """Resolve a position's payout per share.
+
+    Returns:
+        (payout_per_share, settlement_mode, settlement_source) or None if
+        the market is not yet terminal.
+
+        payout_per_share: float in [0, 1]
+        settlement_mode: "win" | "loss" | "split" | "partial" | "unknown_terminal"
+        settlement_source: "polymarket" | "kalshi"
     """
     if pos.platform == "polymarket":
-        return await _check_poly_resolution(pos, registry)
+        return await _resolve_poly(pos)
     elif pos.platform == "kalshi":
-        return await _check_kalshi_resolution(pos)
+        return await _resolve_kalshi(pos)
     return None
 
 
-async def _check_poly_resolution(pos, registry) -> bool | None:
-    """Check Polymarket market resolution via Gamma API.
+async def _resolve_poly(pos) -> tuple[float, str, str] | None:
+    """Resolve Polymarket settlement via Gamma API.
 
-    Queries by token_id (always available on the position).
-    Uses outcomePrices to determine winner: "1" = won, "0" = lost.
+    Returns numeric payout_per_share:
+      - 1.0 if outcomePrices shows our token at >= 0.99
+      - 0.0 if outcomePrices shows our token at <= 0.01
+      - 0.5 if both outcomes near 0.5 (split / cancelled / unknown)
+      - any other float if venue settles at a partial value
+      - None if market not yet closed
     """
     import json as _json
 
@@ -173,7 +202,10 @@ async def _check_poly_resolution(pos, registry) -> bool | None:
         market = data[0]
 
         if not market.get("closed", False):
-            logger.info("Market not closed yet for %s (team=%s, closed=%s)", token_id[:30], pos.team, market.get("closed"))
+            logger.info(
+                "Market not closed yet for %s (team=%s, closed=%s)",
+                token_id[:30], pos.team, market.get("closed"),
+            )
             return None
 
         # Parse outcome prices and token IDs
@@ -191,17 +223,28 @@ async def _check_poly_resolution(pos, registry) -> bool | None:
         # Match our token_id to find its settlement price
         for tid, price in zip(clob_tokens, prices):
             if tid == token_id:
-                settlement_price = float(price)
-                # 1.0 = won, 0.0 = lost
-                if settlement_price >= 0.99:
-                    return True
-                elif settlement_price <= 0.01:
-                    return False
-                # Price between 0.01 and 0.99 means not yet resolved
-                logger.info("Token %s has price %.2f — not yet resolved", token_id[:30], settlement_price)
-                return None
+                pps = float(price)
 
-        # Token not found — log full details for debugging
+                # Classify settlement mode
+                if pps >= 0.99:
+                    return (1.0, "win", "polymarket")
+                elif pps <= 0.01:
+                    return (0.0, "loss", "polymarket")
+                elif abs(pps - 0.5) < 0.05:
+                    # Near 50/50 — split / cancelled / unknown resolution
+                    logger.info(
+                        "Polymarket SPLIT settlement: token %s settled at %.4f/share (team=%s)",
+                        token_id[:30], pps, pos.team,
+                    )
+                    return (pps, "split", "polymarket")
+                else:
+                    # Some other partial payout
+                    logger.info(
+                        "Polymarket PARTIAL settlement: token %s settled at %.4f/share (team=%s)",
+                        token_id[:30], pps, pos.team,
+                    )
+                    return (pps, "partial", "polymarket")
+
         logger.warning(
             "Poly token %s not in clobTokenIds. Market question: %s, tokens: %s",
             token_id[:40], market.get("question", "?")[:60],
@@ -214,8 +257,19 @@ async def _check_poly_resolution(pos, registry) -> bool | None:
         return None
 
 
-async def _check_kalshi_resolution(pos) -> bool | None:
-    """Check Kalshi market resolution via public REST API."""
+async def _resolve_kalshi(pos) -> tuple[float, str, str] | None:
+    """Resolve Kalshi settlement via public REST API.
+
+    Returns numeric payout_per_share:
+      - 1.0 if result == "yes"
+      - 0.0 if result == "no"
+      - None if not yet terminal or payout cannot be safely inferred
+
+    Note: Kalshi cancelled markets may return different statuses.
+    TODO: Handle venue-specific cancellation rules (e.g. voided events,
+    rule 4a amendments) when Kalshi provides explicit payout values
+    via their settlement/portfolio API.
+    """
     ticker = pos.market_id
     if not ticker:
         return None
@@ -232,23 +286,54 @@ async def _check_kalshi_resolution(pos) -> bool | None:
         market = resp.json().get("market", {})
         status = market.get("status", "")
 
-        # Kalshi uses "finalized" for settled markets
-        if status not in ("finalized", "settled"):
+        # Not yet terminal
+        if status not in ("finalized", "settled", "closed"):
             return None
 
         result = market.get("result", "")
 
-        # Determine if our bet won.
-        # We buy YES on the outcome we're backing. If the market result
-        # matches our team's outcome (result="yes"), we win.
-        # For arbs: we buy YES on team A here AND YES on team B elsewhere.
-        # Only one can win, which is correct — one leg wins, one loses.
         if result == "yes":
-            return True
+            return (1.0, "win", "kalshi")
         elif result == "no":
-            return False
+            return (0.0, "loss", "kalshi")
+        elif result in ("", "void", "cancelled"):
+            # Terminal but no clear binary result.
+            # Check if Kalshi provides an explicit settlement value.
+            # TODO: Query Kalshi portfolio/settlement API for explicit payout
+            # when available. For now, log and leave unresolved.
+            settle_value = market.get("settlement_value")
+            if settle_value is not None:
+                try:
+                    pps = float(settle_value)
+                    if 0.0 <= pps <= 1.0:
+                        mode = "split" if abs(pps - 0.5) < 0.05 else "partial"
+                        logger.info(
+                            "Kalshi explicit settlement: %s at %.4f/share (status=%s)",
+                            ticker, pps, status,
+                        )
+                        return (pps, mode, "kalshi")
+                except (ValueError, TypeError):
+                    pass
+
+            # Voided/cancelled without explicit value — likely a full refund.
+            # Kalshi typically refunds cost basis on voided markets.
+            if result in ("void", "cancelled"):
+                logger.info(
+                    "Kalshi VOID/CANCELLED: %s (status=%s, result=%s) — "
+                    "settling as refund (payout = entry price)",
+                    ticker, status, result,
+                )
+                # Refund = you get back what you paid per share
+                return (pos.price, "void_refund", "kalshi")
+
+            logger.warning(
+                "Kalshi terminal but unknown payout: %s (status=%s, result='%s') — "
+                "leaving unresolved pending manual review",
+                ticker, status, result,
+            )
+            return None
         else:
-            logger.warning("Unknown Kalshi result '%s' for %s", result, ticker)
+            logger.warning("Unknown Kalshi result '%s' for %s (status=%s)", result, ticker, status)
             return None
 
     except Exception:
@@ -256,20 +341,11 @@ async def _check_kalshi_resolution(pos) -> bool | None:
         return None
 
 
-def _find_condition_id(pos, registry) -> str:
-    """Look up the Polymarket condition_id from the registry for a position."""
-    for match in registry.matches.values():
-        if match.poly_token_id_a == pos.market_id or match.poly_token_id_b == pos.market_id:
-            return match.poly_condition_id
-    return ""
+# ── Helpers ────────────────────────────────────────────────────────────
 
 
 def _get_pinnacle_closing_prob(pos, registry) -> float:
-    """Get the latest Pinnacle probability for a position's team (closing line).
-
-    This captures the Pinnacle line at settlement time — compared against
-    the entry price, this gives CLV (Closing Line Value).
-    """
+    """Get the latest Pinnacle probability for a position's team (closing line)."""
     for match in registry.matches.values():
         if match.poly_token_id_a == pos.market_id or (
             pos.platform == "kalshi" and match.kalshi_ticker_a == pos.market_id
