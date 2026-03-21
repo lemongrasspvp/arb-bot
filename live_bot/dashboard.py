@@ -124,23 +124,35 @@ def _render_html(portfolio) -> str:
     strategy_html = _build_strategy_table(portfolio)
 
     # CLV stats from settlements
-    # CLV: use clv_pct (percentage) — measures Pinnacle line movement.
-    # Old settlements used wrong formula (pinnacle_close - market_price),
-    # so we only count entries that have the corrected clv_pct field.
-    # Old entries with pinnacle_prob_at_entry can be retroactively computed.
+    # Trade CLV: (pinnacle_close - market_entry) / market_entry
+    # Measures whether we bought cheaper than the sharp closing line.
+    # Pinnacle drift: (pinnacle_close - pinnacle_entry) / pinnacle_entry
+    # Measures whether the sharp line moved in our favor (signal quality).
     clv_values = []
+    drift_values = []
     for s in settlement_entries:
-        extra = s.get("extra", s)  # handle both nested and flat formats
+        extra = s.get("extra", s)
+        # Trade CLV
         pct = extra.get("clv_pct", 0)
         if pct and pct != 0:
             clv_values.append(pct)
         else:
-            # Retroactively compute for old entries if we have both Pinnacle probs
+            # Retroactively compute from pinnacle_close and market entry price
+            pin_close = extra.get("pinnacle_prob_at_close", 0)
+            entry_price = s.get("price_a", 0)
+            if pin_close > 0 and entry_price > 0:
+                clv_values.append((pin_close - entry_price) / entry_price)
+        # Pinnacle drift
+        drift_pct = extra.get("pin_drift_pct", 0)
+        if drift_pct and drift_pct != 0:
+            drift_values.append(drift_pct)
+        else:
             pin_entry = extra.get("pinnacle_prob_at_entry", 0)
             pin_close = extra.get("pinnacle_prob_at_close", 0)
             if pin_entry > 0 and pin_close > 0:
-                clv_values.append((pin_close - pin_entry) / pin_entry)
+                drift_values.append((pin_close - pin_entry) / pin_entry)
     avg_clv = sum(clv_values) / len(clv_values) if clv_values else 0.0
+    avg_drift = sum(drift_values) / len(drift_values) if drift_values else 0.0
     clv_count = len(clv_values)
 
     # Pinnacle health
@@ -290,9 +302,9 @@ tr:hover {{ background: rgba(88, 166, 255, 0.04); }}
         <div class="meta">{portfolio.total_pnl / portfolio.total_portfolio_value * 100 if portfolio.total_portfolio_value > 0 else 0:+.1f}% return</div>
     </div>
     <div class="card {'green' if avg_clv >= 0 else 'red'}">
-        <div class="card-label">Avg CLV</div>
+        <div class="card-label">Trade CLV</div>
         <div class="card-value {'positive' if avg_clv >= 0 else 'negative'}">{avg_clv * 100:+.1f}%</div>
-        <div class="meta">{clv_count} settled</div>
+        <div class="meta">{clv_count} settled | drift {avg_drift * 100:+.1f}%</div>
     </div>
     <div class="card yellow">
         <div class="card-label">Open Positions</div>

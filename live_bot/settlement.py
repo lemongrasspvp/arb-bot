@@ -59,12 +59,20 @@ async def settlement_loop(
                     pinnacle_prob_at_close = _get_pinnacle_closing_prob(pos, registry)
                 clv = 0.0
                 clv_pct = 0.0
+                pin_drift = 0.0
+                pin_drift_pct = 0.0
+                if pinnacle_prob_at_close > 0 and pos.price > 0:
+                    # Trade CLV: did we buy cheaper than the sharp close?
+                    # (pinnacle_close - market_entry) / market_entry
+                    # Captures both entry edge AND subsequent line movement.
+                    clv = pinnacle_prob_at_close - pos.price
+                    clv_pct = clv / pos.price
                 if pos.pinnacle_prob_at_entry > 0 and pinnacle_prob_at_close > 0:
-                    # CLV = (pinnacle_close - pinnacle_entry) / pinnacle_entry
-                    # Measures whether Pinnacle's own line moved in our favor.
-                    # Positive CLV means the sharp line confirmed our bet direction.
-                    clv = pinnacle_prob_at_close - pos.pinnacle_prob_at_entry
-                    clv_pct = clv / pos.pinnacle_prob_at_entry
+                    # Pinnacle drift: did the sharp line move in our favor?
+                    # (pinnacle_close - pinnacle_entry) / pinnacle_entry
+                    # Measures signal quality independent of execution.
+                    pin_drift = pinnacle_prob_at_close - pos.pinnacle_prob_at_entry
+                    pin_drift_pct = pin_drift / pos.pinnacle_prob_at_entry
 
                 # Settle
                 pnl = portfolio.settle_position(pos.market_id, won)
@@ -91,13 +99,15 @@ async def settlement_loop(
                         "pinnacle_prob_at_close": round(pinnacle_prob_at_close, 6),
                         "clv": round(clv, 4),
                         "clv_pct": round(clv_pct, 4),
+                        "pin_drift": round(pin_drift, 4),
+                        "pin_drift_pct": round(pin_drift_pct, 4),
                     },
                 )
 
                 logger.info(
-                    "SETTLED: %s %s@%s — %s | P&L=$%.2f | CLV=%+.1f%%",
+                    "SETTLED: %s %s@%s — %s | P&L=$%.2f | CLV=%+.1f%% | Drift=%+.1f%%",
                     pos.team, pos.platform, pos.match_id,
-                    "WON" if won else "LOST", pnl, clv_pct * 100,
+                    "WON" if won else "LOST", pnl, clv_pct * 100, pin_drift_pct * 100,
                 )
 
             except Exception:
