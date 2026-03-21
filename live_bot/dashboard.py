@@ -124,10 +124,20 @@ def _render_html(portfolio) -> str:
     strategy_html = _build_strategy_table(portfolio)
 
     # CLV stats from settlements
-    clv_values = [s.get("clv_pct", 0) for s in settlement_entries if s.get("clv_pct") is not None and s.get("clv_pct") != 0]
-    # Fallback: if no clv_pct yet (old settlements), use clv cents
-    if not clv_values:
-        clv_values = [s.get("clv", 0) for s in settlement_entries if s.get("clv") is not None and s.get("clv") != 0]
+    # CLV: use clv_pct (percentage) if available, otherwise convert old clv (cents)
+    # by dividing by entry price to get approximate percentage.
+    clv_values = []
+    for s in settlement_entries:
+        pct = s.get("clv_pct", 0)
+        if pct and pct != 0:
+            clv_values.append(pct)
+        elif s.get("clv") and s["clv"] != 0:
+            # Old format: clv is absolute (closing - entry). Convert to pct.
+            entry_price = s.get("price_a", 0)
+            if entry_price > 0:
+                clv_values.append(s["clv"] / entry_price)
+            else:
+                clv_values.append(s["clv"])  # can't convert, use raw
     avg_clv = sum(clv_values) / len(clv_values) if clv_values else 0.0
     clv_count = len(clv_values)
 
