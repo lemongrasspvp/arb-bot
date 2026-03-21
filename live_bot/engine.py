@@ -298,6 +298,10 @@ class ArbEngine:
                 self._last_pinnacle_scan = now
 
                 # Update CLV: keep pinnacle_prob_latest fresh on open positions
+                # Also track pinnacle_prob_pregame_close — the last pre-game
+                # Pinnacle prob, used for CLV. Once match starts (commence_time
+                # passed), stop updating pregame_close so it isn't contaminated
+                # by live in-game odds.
                 for pos in self.portfolio.positions:
                     for m in self.registry.matches.values():
                         pin_prob = 0.0
@@ -311,6 +315,20 @@ class ArbEngine:
                             pin_prob = m.pinnacle_prob_b
                         if pin_prob > 0:
                             pos.pinnacle_prob_latest = pin_prob
+                            # Only update pregame close if match hasn't started
+                            match_started = False
+                            if m.commence_time:
+                                try:
+                                    from datetime import datetime, timezone
+                                    ct = m.commence_time
+                                    if ct.endswith("Z"):
+                                        ct = ct[:-1] + "+00:00"
+                                    start = datetime.fromisoformat(ct)
+                                    match_started = datetime.now(timezone.utc) >= start
+                                except (ValueError, TypeError):
+                                    pass
+                            if not match_started:
+                                pos.pinnacle_prob_pregame_close = pin_prob
                             break
 
                 for m in self.registry.matches.values():
