@@ -58,10 +58,12 @@ async def settlement_loop(
                 if pinnacle_prob_at_close <= 0:
                     pinnacle_prob_at_close = _get_pinnacle_closing_prob(pos, registry)
                 clv = 0.0
-                if pos.pinnacle_prob_at_entry > 0 and pinnacle_prob_at_close > 0:
-                    # CLV = closing prob - entry price
+                clv_pct = 0.0
+                if pos.pinnacle_prob_at_entry > 0 and pinnacle_prob_at_close > 0 and pos.price > 0:
+                    # CLV = (closing_prob - entry_price) / entry_price
                     # Positive CLV means we bought below the closing line (good)
                     clv = pinnacle_prob_at_close - pos.price
+                    clv_pct = clv / pos.price  # percentage CLV
 
                 # Settle
                 pnl = portfolio.settle_position(pos.market_id, won)
@@ -87,13 +89,14 @@ async def settlement_loop(
                         "pinnacle_prob_at_entry": round(pos.pinnacle_prob_at_entry, 6),
                         "pinnacle_prob_at_close": round(pinnacle_prob_at_close, 6),
                         "clv": round(clv, 4),
+                        "clv_pct": round(clv_pct, 4),
                     },
                 )
 
                 logger.info(
-                    "SETTLED: %s %s@%s — %s | P&L=$%.2f | CLV=%.1f¢",
+                    "SETTLED: %s %s@%s — %s | P&L=$%.2f | CLV=%+.1f%%",
                     pos.team, pos.platform, pos.match_id,
-                    "WON" if won else "LOST", pnl, clv * 100,
+                    "WON" if won else "LOST", pnl, clv_pct * 100,
                 )
 
             except Exception:

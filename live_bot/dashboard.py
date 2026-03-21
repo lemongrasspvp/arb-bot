@@ -124,7 +124,10 @@ def _render_html(portfolio) -> str:
     strategy_html = _build_strategy_table(portfolio)
 
     # CLV stats from settlements
-    clv_values = [s.get("clv", 0) for s in settlement_entries if s.get("clv") is not None and s.get("clv") != 0]
+    clv_values = [s.get("clv_pct", 0) for s in settlement_entries if s.get("clv_pct") is not None and s.get("clv_pct") != 0]
+    # Fallback: if no clv_pct yet (old settlements), use clv cents
+    if not clv_values:
+        clv_values = [s.get("clv", 0) for s in settlement_entries if s.get("clv") is not None and s.get("clv") != 0]
     avg_clv = sum(clv_values) / len(clv_values) if clv_values else 0.0
     clv_count = len(clv_values)
 
@@ -276,7 +279,7 @@ tr:hover {{ background: rgba(88, 166, 255, 0.04); }}
     </div>
     <div class="card {'green' if avg_clv >= 0 else 'red'}">
         <div class="card-label">Avg CLV</div>
-        <div class="card-value {'positive' if avg_clv >= 0 else 'negative'}">{avg_clv * 100:+.1f}¢</div>
+        <div class="card-value {'positive' if avg_clv >= 0 else 'negative'}">{avg_clv * 100:+.1f}%</div>
         <div class="meta">{clv_count} settled</div>
     </div>
     <div class="card yellow">
