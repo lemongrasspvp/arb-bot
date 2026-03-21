@@ -105,6 +105,7 @@ async def settlement_loop(
                         "clv_pct": round(clv_pct, 4),
                         "pin_drift": round(pin_drift, 4),
                         "pin_drift_pct": round(pin_drift_pct, 4),
+                        "shadow_exits": pos.shadow_exits if pos.shadow_exits else {},
                     },
                 )
 

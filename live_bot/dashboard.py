@@ -155,6 +155,9 @@ def _render_html(portfolio) -> str:
     avg_drift = sum(drift_values) / len(drift_values) if drift_values else 0.0
     clv_count = len(clv_values)
 
+    # Shadow exit summary stats
+    shadow_stats = _build_shadow_summary(settlement_entries)
+
     # Pinnacle health
     pin_status = pinnacle_health["status"]
     pin_last_ok = pinnacle_health["last_success"]
@@ -326,6 +329,7 @@ tr:hover {{ background: rgba(88, 166, 255, 0.04); }}
 
 {trades_html}
 
+{shadow_stats}
 
 </body>
 </html>"""
@@ -522,6 +526,102 @@ def _read_recent_trades(limit: int = 200) -> list[dict]:
         return entries
     except OSError:
         return []
+
+
+def _build_shadow_summary(settlement_entries: list) -> str:
+    """Build shadow early-exit comparison table from settled trades."""
+    checkpoints = ["30m", "10m", "5m", "1m"]
+    # Collect data per checkpoint
+    cp_data = {cp: [] for cp in checkpoints}
+    hold_pnls = []
+
+    for s in settlement_entries:
+        extra = s.get("extra", s)
+        actual_pnl = extra.get("pnl", 0)
+        shadow = extra.get("shadow_exits", {})
+        if not shadow:
+            continue
+
+        hold_pnls.append(actual_pnl)
+        cost = s.get("size_usd", 0)
+
+        for cp in checkpoints:
+            data = shadow.get(cp, {})
+            if data.get("skipped") or not data.get("shadow_pnl") is not None:
+                continue
+            if "shadow_pnl" not in data:
+                continue
+            cp_data[cp].append({
+                "shadow_pnl": data["shadow_pnl"],
+                "shadow_roi": data.get("shadow_roi", 0),
+                "actual_pnl": actual_pnl,
+                "cost": cost,
+                "fully_exec": data.get("fully_executable", False),
+            })
+
+    if not hold_pnls:
+        return ""
+
+    import statistics
+
+    avg_hold = sum(hold_pnls) / len(hold_pnls)
+    hold_wins = sum(1 for p in hold_pnls if p > 0)
+    hold_wr = hold_wins / len(hold_pnls) * 100 if hold_pnls else 0
+
+    rows = ""
+    for cp in checkpoints:
+        entries = cp_data[cp]
+        if not entries:
+            rows += f"""<tr>
+                <td>{cp}</td><td>0</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>
+            </tr>"""
+            continue
+
+        pnls = [e["shadow_pnl"] for e in entries]
+        rois = [e["shadow_roi"] for e in entries]
+        wins = sum(1 for p in pnls if p > 0)
+        avg_pnl = sum(pnls) / len(pnls)
+        avg_roi = sum(rois) / len(rois) * 100
+        win_rate = wins / len(pnls) * 100
+        std_dev = statistics.stdev(pnls) if len(pnls) > 1 else 0
+        vs_hold = avg_pnl - avg_hold
+        fully_exec_pct = sum(1 for e in entries if e["fully_exec"]) / len(entries) * 100
+
+        color = "positive" if avg_pnl >= 0 else "negative"
+        vs_color = "positive" if vs_hold >= 0 else "negative"
+
+        rows += f"""<tr>
+            <td><strong>{cp}</strong></td>
+            <td>{len(entries)}</td>
+            <td class="{color}">${avg_pnl:+.2f}</td>
+            <td>{avg_roi:+.1f}%</td>
+            <td>{win_rate:.0f}%</td>
+            <td>${std_dev:.2f}</td>
+            <td class="{vs_color}">${vs_hold:+.2f}</td>
+        </tr>"""
+
+    # Hold row
+    hold_std = statistics.stdev(hold_pnls) if len(hold_pnls) > 1 else 0
+    rows += f"""<tr style="border-top: 2px solid #555; font-weight: bold;">
+        <td>HOLD</td>
+        <td>{len(hold_pnls)}</td>
+        <td class="{'positive' if avg_hold >= 0 else 'negative'}">${avg_hold:+.2f}</td>
+        <td>—</td>
+        <td>{hold_wr:.0f}%</td>
+        <td>${hold_std:.2f}</td>
+        <td>—</td>
+    </tr>"""
+
+    return f"""
+    <h2>Shadow Early-Exit Model</h2>
+    <p style="color: #888; font-size: 0.85rem;">Analytics only — compares hypothetical pre-start exits vs holding to settlement</p>
+    <table>
+        <tr>
+            <th>Exit</th><th>Trades</th><th>Avg P&L</th><th>Avg ROI</th>
+            <th>Win Rate</th><th>Std Dev</th><th>vs Hold</th>
+        </tr>
+        {rows}
+    </table>"""
 
 
 def _fmt_duration(seconds: float) -> str:

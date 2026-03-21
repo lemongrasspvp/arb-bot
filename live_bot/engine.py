@@ -333,6 +333,10 @@ class ArbEngine:
 
                 for m in self.registry.matches.values():
                     await self._check_value(m)
+
+                # Shadow early-exit checkpoints (analytics only)
+                from live_bot.shadow_exit import check_shadow_exits
+                check_shadow_exits(self.portfolio, self.registry, self.prices)
             return
 
         if not match:

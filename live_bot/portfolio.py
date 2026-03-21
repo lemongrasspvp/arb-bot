@@ -55,6 +55,11 @@ class Position:
     pinnacle_prob_at_entry: float = 0.0  # Pinnacle no-vig prob when bet was placed (for CLV)
     pinnacle_prob_latest: float = 0.0    # Last known Pinnacle prob (updated each poll, for closing line)
     pinnacle_prob_pregame_close: float = 0.0  # Last PRE-GAME Pinnacle prob (not contaminated by live odds)
+    shadow_exits: dict = None  # Shadow early-exit checkpoints: {"30m": {"bid_vwap": ..., "pnl": ..., ...}}
+
+    def __post_init__(self):
+        if self.shadow_exits is None:
+            self.shadow_exits = {}
 
 
 @dataclass

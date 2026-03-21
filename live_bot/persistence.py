@@ -106,6 +106,9 @@ def save_positions(portfolio) -> None:
                 "timing": p.timing,
                 "condition_id": p.condition_id,
                 "pinnacle_prob_at_entry": p.pinnacle_prob_at_entry,
+                "pinnacle_prob_latest": p.pinnacle_prob_latest,
+                "pinnacle_prob_pregame_close": p.pinnacle_prob_pregame_close,
+                "shadow_exits": p.shadow_exits,
             }
             for p in portfolio.positions
         ],
@@ -170,6 +173,9 @@ def load_positions(portfolio) -> int:
                 timing=p_data.get("timing", "pregame"),
                 condition_id=p_data.get("condition_id", ""),
                 pinnacle_prob_at_entry=p_data.get("pinnacle_prob_at_entry", 0.0),
+                pinnacle_prob_latest=p_data.get("pinnacle_prob_latest", 0.0),
+                pinnacle_prob_pregame_close=p_data.get("pinnacle_prob_pregame_close", 0.0),
+                shadow_exits=p_data.get("shadow_exits", {}),
             )
             portfolio.positions.append(pos)
 
