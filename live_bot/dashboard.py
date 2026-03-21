@@ -560,7 +560,17 @@ def _build_shadow_summary(settlement_entries: list) -> str:
             })
 
     if not hold_pnls:
-        return ""
+        return """
+    <h2>Shadow Early-Exit Model</h2>
+    <p style="color: #888; font-size: 0.85rem;">Analytics only — collecting data. Stats appear after positions with shadow checkpoints settle.</p>
+    <table>
+        <tr><th>Exit</th><th>Trades</th><th>Avg P&L</th><th>Avg ROI</th><th>Win Rate</th><th>Std Dev</th><th>vs Hold</th></tr>
+        <tr><td>30m</td><td>0</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+        <tr><td>10m</td><td>0</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+        <tr><td>5m</td><td>0</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+        <tr><td>1m</td><td>0</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+        <tr style="border-top: 2px solid #555; font-weight: bold;"><td>HOLD</td><td>0</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+    </table>"""
 
     import statistics
 
