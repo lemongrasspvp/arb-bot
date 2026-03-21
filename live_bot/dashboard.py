@@ -124,20 +124,22 @@ def _render_html(portfolio) -> str:
     strategy_html = _build_strategy_table(portfolio)
 
     # CLV stats from settlements
-    # CLV: use clv_pct (percentage) if available, otherwise convert old clv (cents)
-    # by dividing by entry price to get approximate percentage.
+    # CLV: use clv_pct (percentage) — measures Pinnacle line movement.
+    # Old settlements used wrong formula (pinnacle_close - market_price),
+    # so we only count entries that have the corrected clv_pct field.
+    # Old entries with pinnacle_prob_at_entry can be retroactively computed.
     clv_values = []
     for s in settlement_entries:
-        pct = s.get("clv_pct", 0)
+        extra = s.get("extra", s)  # handle both nested and flat formats
+        pct = extra.get("clv_pct", 0)
         if pct and pct != 0:
             clv_values.append(pct)
-        elif s.get("clv") and s["clv"] != 0:
-            # Old format: clv is absolute (closing - entry). Convert to pct.
-            entry_price = s.get("price_a", 0)
-            if entry_price > 0:
-                clv_values.append(s["clv"] / entry_price)
-            else:
-                clv_values.append(s["clv"])  # can't convert, use raw
+        else:
+            # Retroactively compute for old entries if we have both Pinnacle probs
+            pin_entry = extra.get("pinnacle_prob_at_entry", 0)
+            pin_close = extra.get("pinnacle_prob_at_close", 0)
+            if pin_entry > 0 and pin_close > 0:
+                clv_values.append((pin_close - pin_entry) / pin_entry)
     avg_clv = sum(clv_values) / len(clv_values) if clv_values else 0.0
     clv_count = len(clv_values)
 

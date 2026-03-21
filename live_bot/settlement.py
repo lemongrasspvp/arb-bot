@@ -59,11 +59,12 @@ async def settlement_loop(
                     pinnacle_prob_at_close = _get_pinnacle_closing_prob(pos, registry)
                 clv = 0.0
                 clv_pct = 0.0
-                if pos.pinnacle_prob_at_entry > 0 and pinnacle_prob_at_close > 0 and pos.price > 0:
-                    # CLV = (closing_prob - entry_price) / entry_price
-                    # Positive CLV means we bought below the closing line (good)
-                    clv = pinnacle_prob_at_close - pos.price
-                    clv_pct = clv / pos.price  # percentage CLV
+                if pos.pinnacle_prob_at_entry > 0 and pinnacle_prob_at_close > 0:
+                    # CLV = (pinnacle_close - pinnacle_entry) / pinnacle_entry
+                    # Measures whether Pinnacle's own line moved in our favor.
+                    # Positive CLV means the sharp line confirmed our bet direction.
+                    clv = pinnacle_prob_at_close - pos.pinnacle_prob_at_entry
+                    clv_pct = clv / pos.pinnacle_prob_at_entry
 
                 # Settle
                 pnl = portfolio.settle_position(pos.market_id, won)
