@@ -239,11 +239,26 @@ async def run_bot(live: bool = False) -> None:
 
     # Observer log paths
     if OBSERVER_MODE:
-        from live_bot.config import SIGNAL_LOG_PATH, MARKOUT_LOG_PATH, SIGNAL_LOG_STDOUT
+        from live_bot.config import SIGNAL_LOG_PATH, MARKOUT_LOG_PATH, SIGNAL_LOG_STDOUT, DATA_DIR
+        console.print(f"[cyan]Observer DATA_DIR:[/cyan]     {DATA_DIR or '(not set — using working dir)'}")
+        if DATA_DIR:
+            dir_exists = Path(DATA_DIR).exists()
+            dir_is_mount = Path(DATA_DIR).is_mount()
+            console.print(f"[cyan]  /data exists:[/cyan]        {'✅ Yes' if dir_exists else '❌ NO — volume not mounted!'}")
+            console.print(f"[cyan]  /data is mount:[/cyan]       {'✅ Yes (volume)' if dir_is_mount else '⚠️  No (local dir, not a volume)'}")
         console.print(f"[cyan]Observer signal log:[/cyan]  {SIGNAL_LOG_PATH}")
         console.print(f"[cyan]Observer markout log:[/cyan] {MARKOUT_LOG_PATH}")
         if SIGNAL_LOG_STDOUT:
             console.print("[cyan]Stdout JSON fallback:[/cyan] ✅ Enabled")
+        # Test write
+        try:
+            test_path = Path(SIGNAL_LOG_PATH)
+            test_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(test_path, "a") as f:
+                f.flush()
+            console.print(f"[green]Observer file write test:[/green] ✅ OK")
+        except Exception as e:
+            console.print(f"[red]Observer file write test:[/red] ❌ FAILED: {e}")
         console.print()
 
     # Step 1: Build market registry

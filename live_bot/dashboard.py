@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-from live_bot.config import DASHBOARD_PORT, TRADE_LOG_PATH, SIMULATION_MODE, WALLET_CAP
+from live_bot.config import DASHBOARD_PORT, TRADE_LOG_PATH, SIMULATION_MODE, WALLET_CAP, SIGNAL_LOG_PATH, MARKOUT_LOG_PATH
 from live_bot.feeds.pinnacle_poll import pinnacle_health
 
 logger = logging.getLogger(__name__)
@@ -65,6 +65,36 @@ async def dashboard_server(portfolio, shutdown_event: asyncio.Event) -> None:
                     writer.write(resp.encode("utf-8"))
                     await writer.drain()
                     return
+
+            # Parse request path
+            req_parts = request_line.decode("utf-8", errors="ignore").split()
+            req_path = req_parts[1] if len(req_parts) > 1 else "/"
+
+            # ── File download endpoints ──
+            _file_routes = {
+                "/data/signals": SIGNAL_LOG_PATH,
+                "/data/markouts": MARKOUT_LOG_PATH,
+                "/data/trades": TRADE_LOG_PATH,
+            }
+            if req_path in _file_routes:
+                fpath = _file_routes[req_path]
+                try:
+                    content = Path(fpath).read_bytes()
+                    header = (
+                        "HTTP/1.1 200 OK\r\n"
+                        "Content-Type: application/x-ndjson\r\n"
+                        f"Content-Length: {len(content)}\r\n"
+                        f'Content-Disposition: attachment; filename="{Path(fpath).name}"\r\n'
+                        "Connection: close\r\n"
+                        "\r\n"
+                    )
+                    writer.write(header.encode("utf-8") + content)
+                except FileNotFoundError:
+                    msg = b"File not found (no signals logged yet)\n"
+                    header = f"HTTP/1.1 404 Not Found\r\nContent-Length: {len(msg)}\r\nConnection: close\r\n\r\n"
+                    writer.write(header.encode("utf-8") + msg)
+                await writer.drain()
+                return
 
             html = _render_html(portfolio)
             body = html.encode("utf-8")
