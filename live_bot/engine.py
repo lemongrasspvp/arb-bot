@@ -918,26 +918,6 @@ class ArbEngine:
                 team_name, platform, pin_prob * 100, effective_price * 100, edge * 100, pin_margin * 100,
             )
 
-            # ── Observer: log detected signal ──
-            _obs_sig_id = None
-            if OBSERVER_MODE:
-                try:
-                    from live_bot.signal_logger import log_signal
-                    _obs_sig_id = log_signal(
-                        match=match, team_side=team_side, team_name=team_name,
-                        platform=platform, market_id=market_id,
-                        pin_prob=pin_prob, pin_margin=pin_margin,
-                        effective_price=effective_price, best_ask=market_ask,
-                        best_bid=cached.get("best_bid", 0),
-                        edge=edge, min_edge=min_edge, timing=timing,
-                        cached=cached, ask_levels=ask_levels,
-                        last_seen=last_seen, now=now,
-                        intended_size_usd=intended_size_usd,
-                        price_cache=self.prices,
-                    )
-                except Exception:
-                    pass
-
             # Sanity cap: edges above 20% are almost certainly stale refs or bad matches
             if edge > MAX_VALUE_EDGE_PCT / 100:
                 logger.debug(
@@ -980,6 +960,25 @@ class ArbEngine:
 
             if persistence is None:
                 # First sighting — record observation 1
+                # ── Observer: log detected signal (once per unique edge) ──
+                _obs_sig_id = None
+                if OBSERVER_MODE:
+                    try:
+                        from live_bot.signal_logger import log_signal
+                        _obs_sig_id = log_signal(
+                            match=match, team_side=team_side, team_name=team_name,
+                            platform=platform, market_id=market_id,
+                            pin_prob=pin_prob, pin_margin=pin_margin,
+                            effective_price=effective_price, best_ask=market_ask,
+                            best_bid=cached.get("best_bid", 0),
+                            edge=edge, min_edge=min_edge, timing=timing,
+                            cached=cached, ask_levels=ask_levels,
+                            last_seen=last_seen, now=now,
+                            intended_size_usd=intended_size_usd,
+                            price_cache=self.prices,
+                        )
+                    except Exception:
+                        pass
                 self._edge_persistence[val_key] = {
                     "count": 1,
                     "first_seen": now,
@@ -996,12 +995,31 @@ class ArbEngine:
                 age = now - persistence["first_seen"]
                 # Too old (>90s) — edge disappeared and came back, reset
                 if age > 90:
+                    # Edge disappeared and came back — reset with new signal
+                    _reset_sig_id = None
+                    if OBSERVER_MODE:
+                        try:
+                            from live_bot.signal_logger import log_signal
+                            _reset_sig_id = log_signal(
+                                match=match, team_side=team_side, team_name=team_name,
+                                platform=platform, market_id=market_id,
+                                pin_prob=pin_prob, pin_margin=pin_margin,
+                                effective_price=effective_price, best_ask=market_ask,
+                                best_bid=cached.get("best_bid", 0),
+                                edge=edge, min_edge=min_edge, timing=timing,
+                                cached=cached, ask_levels=ask_levels,
+                                last_seen=last_seen, now=now,
+                                intended_size_usd=intended_size_usd,
+                                price_cache=self.prices,
+                            )
+                        except Exception:
+                            pass
                     self._edge_persistence[val_key] = {
                         "count": 1,
                         "first_seen": now,
                         "last_pinnacle_ts": current_pin_ts,
                         "last_edge": edge,
-                        "signal_id": _obs_sig_id,  # observer linkage
+                        "signal_id": _reset_sig_id,  # observer linkage
                     }
                     continue
 

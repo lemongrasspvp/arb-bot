@@ -99,6 +99,9 @@ def _kalshi_fee(price: float) -> float:
 
 # ── File writing helpers ─────────────────────────────────────────────
 
+_first_write_done: set[str] = set()
+
+
 def _write_jsonl(path: str, record: dict) -> None:
     """Append one JSON line to a file. Best-effort, flushes after write."""
     try:
@@ -107,8 +110,11 @@ def _write_jsonl(path: str, record: dict) -> None:
         with open(p, "a") as f:
             f.write(json.dumps(record, default=str) + "\n")
             f.flush()
+        if path not in _first_write_done:
+            _first_write_done.add(path)
+            logger.info("First successful write to %s (size=%d bytes)", path, p.stat().st_size)
     except Exception:
-        logger.warning("Failed to write to %s", path, exc_info=True)
+        logger.error("FAILED to write to %s", path, exc_info=True)
 
     if SIGNAL_LOG_STDOUT:
         try:
@@ -320,10 +326,18 @@ async def markout_tracker(
     Reads from the shared price_cache (same dict reference as engine.prices).
     Writes completed markout rows to signal_markouts.jsonl.
     """
-    logger.info(
-        "Markout tracker started — signals: %s, markouts: %s",
-        SIGNAL_LOG_PATH, MARKOUT_LOG_PATH,
-    )
+    # Verify paths are writable at startup
+    for label, fpath in [("signals", SIGNAL_LOG_PATH), ("markouts", MARKOUT_LOG_PATH)]:
+        p = Path(fpath)
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            # Test write
+            with open(p, "a") as f:
+                f.flush()
+            logger.info("Markout tracker: %s path OK → %s (exists=%s, dir=%s)",
+                        label, fpath, p.exists(), p.parent.exists())
+        except Exception:
+            logger.error("Markout tracker: %s path FAILED → %s", label, fpath, exc_info=True)
 
     while not shutdown_event.is_set():
         try:
