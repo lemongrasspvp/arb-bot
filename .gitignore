@@ -8,3 +8,6 @@ live_bot_positions.json
 live_bot_trades*.jsonl
 spreads.html
 .claude/
+data/archive_*/
+signal_events*.jsonl
+signal_markouts*.jsonl

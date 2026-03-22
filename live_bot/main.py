@@ -168,10 +168,11 @@ def _prune_stale_matches(registry) -> int:
     return len(stale_ids)
 
 
-async def _run_markout_tracker(price_cache, shutdown_event: asyncio.Event) -> None:
+async def _run_markout_tracker(price_cache, shutdown_event: asyncio.Event,
+                               match_registry=None) -> None:
     """Wrapper for observer markout tracker background task."""
     from live_bot.signal_logger import markout_tracker
-    await markout_tracker(price_cache, shutdown_event)
+    await markout_tracker(price_cache, shutdown_event, match_registry=match_registry)
 
 
 async def _status_printer(portfolio, shutdown_event: asyncio.Event) -> None:
@@ -389,6 +390,7 @@ async def run_bot(live: bool = False) -> None:
             "dashboard": lambda: dashboard_server(portfolio, shutdown_event),
             **({"markout_tracker": lambda: _run_markout_tracker(
                 engine.prices, shutdown_event,
+                match_registry=registry,
             )} if OBSERVER_MODE else {}),
         }
 

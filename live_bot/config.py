@@ -158,6 +158,10 @@ SIGNAL_LOG_PATH = os.getenv("SIGNAL_LOG_PATH", _data_path("signal_events.jsonl")
 MARKOUT_LOG_PATH = os.getenv("MARKOUT_LOG_PATH", _data_path("signal_markouts.jsonl"))
 # Also emit signal/markout rows as JSON to stdout (useful when Railway volume is unavailable)
 SIGNAL_LOG_STDOUT = os.getenv("SIGNAL_LOG_STDOUT", "false").lower() == "true"
+# Pre-start tradeable label: latest allowed profitable exit before start (minutes)
+OBSERVER_PRESTART_TRADEABLE_CUTOFF_MINUTES = float(
+    os.getenv("OBSERVER_PRESTART_TRADEABLE_CUTOFF_MINUTES", "2")
+)
 
 # ── Settlement ──────────────────────────────────────────────────────
 SETTLEMENT_CHECK_INTERVAL = int(os.getenv("SETTLEMENT_CHECK_INTERVAL", "60"))  # seconds
