@@ -114,6 +114,11 @@ class KalshiExecutor:
         Returns:
             (filled, details) — filled is True if order executed
         """
+        # Defense-in-depth: hard block when trading is globally disabled
+        from live_bot.config import DISABLE_LIVE_TRADING
+        if DISABLE_LIVE_TRADING:
+            return False, {"error": "DISABLE_LIVE_TRADING is active"}
+
         start = time.time()
 
         if not self._init_client():

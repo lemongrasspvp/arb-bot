@@ -36,6 +36,8 @@ from live_bot.config import (
     DASHBOARD_PORT,
     VALUE_EDGE_PERSISTENCE,
     BOT_LOG_PATH,
+    OBSERVER_MODE,
+    DISABLE_LIVE_TRADING,
 )
 
 console = Console()
@@ -165,6 +167,12 @@ def _prune_stale_matches(registry) -> int:
     return len(stale_ids)
 
 
+async def _run_markout_tracker(price_cache, shutdown_event: asyncio.Event) -> None:
+    """Wrapper for observer markout tracker background task."""
+    from live_bot.signal_logger import markout_tracker
+    await markout_tracker(price_cache, shutdown_event)
+
+
 async def _status_printer(portfolio, shutdown_event: asyncio.Event) -> None:
     """Print portfolio status periodically."""
     while not shutdown_event.is_set():
@@ -224,8 +232,19 @@ async def run_bot(live: bool = False) -> None:
     table.add_row("Simulate Kalshi WS", "✅ Yes (no REST penalty)" if SIMULATE_KALSHI_WS else "❌ No (REST +7.5s)")
     table.add_row("Min arb depth", f"${MIN_ARB_DEPTH_USD}")
     table.add_row("Arb execution", "Sequential (harder leg first)")
+    table.add_row("Observer mode", "✅ Logging signals" if OBSERVER_MODE else "OFF")
+    table.add_row("Live trading", "❌ DISABLED" if DISABLE_LIVE_TRADING else "✅ Enabled")
     console.print(table)
     console.print()
+
+    # Observer log paths
+    if OBSERVER_MODE:
+        from live_bot.config import SIGNAL_LOG_PATH, MARKOUT_LOG_PATH, SIGNAL_LOG_STDOUT
+        console.print(f"[cyan]Observer signal log:[/cyan]  {SIGNAL_LOG_PATH}")
+        console.print(f"[cyan]Observer markout log:[/cyan] {MARKOUT_LOG_PATH}")
+        if SIGNAL_LOG_STDOUT:
+            console.print("[cyan]Stdout JSON fallback:[/cyan] ✅ Enabled")
+        console.print()
 
     # Step 1: Build market registry
     console.print("[cyan]Building market registry...[/cyan]")
@@ -352,6 +371,9 @@ async def run_bot(live: bool = False) -> None:
                 shutdown_event,
             ),
             "dashboard": lambda: dashboard_server(portfolio, shutdown_event),
+            **({"markout_tracker": lambda: _run_markout_tracker(
+                engine.prices, shutdown_event,
+            )} if OBSERVER_MODE else {}),
         }
 
     task_factories = _make_tasks()

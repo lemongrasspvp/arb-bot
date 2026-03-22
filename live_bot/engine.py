@@ -24,6 +24,8 @@ from live_bot.config import (
     MAX_MATCH_DURATION_HOURS,
     MAX_POSITION_USD,
     FILL_RECHECK_DELAY,
+    OBSERVER_MODE,
+    DISABLE_LIVE_TRADING,
 )
 from live_bot.registry import MarketRegistry, TrackedMatch
 from live_bot.portfolio import PaperPortfolio, Trade
@@ -514,6 +516,11 @@ class ArbEngine:
         If it fills, immediately place the easier leg. If the easier leg fails,
         sell back the first leg at market price (lose spread, avoid exposure).
         """
+        # ── Global safety gate: block ALL order placement when disabled ──
+        if DISABLE_LIVE_TRADING:
+            logger.info("OBSERVER: Arb bet suppressed — %s", match.match_id)
+            return
+
         start = time.time()
         shares = int(size_usd / cost)  # how many contracts at this combined cost
         if shares < 1:
@@ -911,6 +918,26 @@ class ArbEngine:
                 team_name, platform, pin_prob * 100, effective_price * 100, edge * 100, pin_margin * 100,
             )
 
+            # ── Observer: log detected signal ──
+            _obs_sig_id = None
+            if OBSERVER_MODE:
+                try:
+                    from live_bot.signal_logger import log_signal
+                    _obs_sig_id = log_signal(
+                        match=match, team_side=team_side, team_name=team_name,
+                        platform=platform, market_id=market_id,
+                        pin_prob=pin_prob, pin_margin=pin_margin,
+                        effective_price=effective_price, best_ask=market_ask,
+                        best_bid=cached.get("best_bid", 0),
+                        edge=edge, min_edge=min_edge, timing=timing,
+                        cached=cached, ask_levels=ask_levels,
+                        last_seen=last_seen, now=now,
+                        intended_size_usd=intended_size_usd,
+                        price_cache=self.prices,
+                    )
+                except Exception:
+                    pass
+
             # Sanity cap: edges above 20% are almost certainly stale refs or bad matches
             if edge > MAX_VALUE_EDGE_PCT / 100:
                 logger.debug(
@@ -958,6 +985,7 @@ class ArbEngine:
                     "first_seen": now,
                     "last_pinnacle_ts": current_pin_ts,
                     "last_edge": edge,
+                    "signal_id": _obs_sig_id,  # observer linkage (None when off)
                 }
                 logger.info(
                     "Value persistence [1/%d]: %s %s edge=%.1f%% — waiting for next Pinnacle poll",
@@ -973,6 +1001,7 @@ class ArbEngine:
                         "first_seen": now,
                         "last_pinnacle_ts": current_pin_ts,
                         "last_edge": edge,
+                        "signal_id": _obs_sig_id,  # observer linkage
                     }
                     continue
 
@@ -1006,7 +1035,20 @@ class ArbEngine:
                     continue
 
             # Edge persisted across N Pinnacle poll cycles! Clear tracker
-            self._edge_persistence.pop(val_key, None)
+            _persisted_data = self._edge_persistence.pop(val_key, None)
+
+            # ── Observer: log persisted signal ──
+            if OBSERVER_MODE and _persisted_data:
+                try:
+                    from live_bot.signal_logger import log_signal_persisted
+                    log_signal_persisted(
+                        signal_id=_persisted_data.get("signal_id"),
+                        match=match, team_name=team_name, platform=platform,
+                        market_id=market_id, edge=edge, pin_prob=pin_prob,
+                        cached=cached,
+                    )
+                except Exception:
+                    pass
 
             # Deduplicate
             last = self._recent_values.get(val_key, 0)
@@ -1091,6 +1133,14 @@ class ArbEngine:
         pin_age_at_signal=0.0, mkt_age_at_signal=0.0,
     ) -> None:
         """Inner value bet execution (called under portfolio lock)."""
+        # ── Global safety gate: block ALL order placement when disabled ──
+        if DISABLE_LIVE_TRADING:
+            logger.info(
+                "OBSERVER: Value bet suppressed — %s %s@%s edge=%.1f%% $%.0f",
+                team_name, platform, match.match_id, edge * 100, size_usd,
+            )
+            return
+
         start = time.time()
         shares = int(size_usd / market_price)
         if shares < 1:

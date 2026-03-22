@@ -16,6 +16,13 @@ SIMULATION_MODE = os.getenv("LIVE_BOT_SIMULATION", "true").lower() == "true"
 ENABLE_ARB = os.getenv("ENABLE_ARB", "false").lower() == "true"
 ENABLE_VALUE = os.getenv("ENABLE_VALUE", "true").lower() == "true"
 
+# ── Observer / safety overrides ─────────────────────────────────────
+# OBSERVER_MODE: enable signal + markout JSONL logging (no effect on trading)
+OBSERVER_MODE = os.getenv("OBSERVER_MODE", "false").lower() == "true"
+# DISABLE_LIVE_TRADING: hard global gate — prevents ALL order placement
+# (both simulated and live). Use for pure observation deployments.
+DISABLE_LIVE_TRADING = os.getenv("DISABLE_LIVE_TRADING", "false").lower() == "true"
+
 # ── Polymarket credentials ───────────────────────────────────────────
 POLYMARKET_PRIVATE_KEY = os.getenv("POLYMARKET_PRIVATE_KEY", "")
 POLYMARKET_FUNDER_ADDRESS = os.getenv("POLYMARKET_FUNDER_ADDRESS", "")
@@ -145,6 +152,12 @@ def _data_path(filename: str) -> str:
 TRADE_LOG_PATH = os.getenv("TRADE_LOG_PATH", _data_path("live_bot_trades.jsonl"))
 BOT_LOG_PATH = os.getenv("BOT_LOG_PATH", _data_path("live_bot.log"))
 POSITIONS_FILE_PATH = _data_path("live_bot_positions.json")
+
+# ── Observer logging ──────────────────────────────────────────────────
+SIGNAL_LOG_PATH = os.getenv("SIGNAL_LOG_PATH", _data_path("signal_events.jsonl"))
+MARKOUT_LOG_PATH = os.getenv("MARKOUT_LOG_PATH", _data_path("signal_markouts.jsonl"))
+# Also emit signal/markout rows as JSON to stdout (useful when Railway volume is unavailable)
+SIGNAL_LOG_STDOUT = os.getenv("SIGNAL_LOG_STDOUT", "false").lower() == "true"
 
 # ── Settlement ──────────────────────────────────────────────────────
 SETTLEMENT_CHECK_INTERVAL = int(os.getenv("SETTLEMENT_CHECK_INTERVAL", "60"))  # seconds
