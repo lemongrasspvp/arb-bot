@@ -5,12 +5,12 @@ import logging
 import os
 from pathlib import Path
 
-from live_bot.config import POSITIONS_FILE_PATH, TRADE_LOG_PATH, DATA_DIR
+from live_bot.config import POSITIONS_FILE_PATH, TRADE_LOG_PATH, INVERTED_FILE_PATH
 
 logger = logging.getLogger(__name__)
 
 POSITIONS_FILE = Path(POSITIONS_FILE_PATH)
-INVERTED_FILE = Path(DATA_DIR) / "inverted_positions.json" if DATA_DIR else Path("inverted_positions.json")
+INVERTED_FILE = Path(INVERTED_FILE_PATH)
 
 
 def maybe_reset_simulation(portfolio) -> bool:

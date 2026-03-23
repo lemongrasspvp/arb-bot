@@ -11,7 +11,6 @@ from live_bot.config import (
     ENABLE_ARB,
     ENABLE_VALUE,
     ENABLE_INVERTED,
-    MAX_INVERTED_PRICE,
     MIN_ARB_PROFIT_PCT,
     MIN_VALUE_EDGE_PCT,
     MIDGAME_VALUE_EDGE_PCT,
@@ -1310,15 +1309,6 @@ class ArbEngine:
             inv_team,
             " | ".join(f"{c[0]}={c[2]*100:.0f}¢" for c in candidates),
         )
-
-        # Price cap: skip heavy favorites — terrible risk/reward
-        if best_ask > MAX_INVERTED_PRICE:
-            inv.skipped_price_too_high += 1
-            logger.info(
-                "Inverted skip (cheapest too expensive): %s best=%s at %.0f¢ > %.0f¢ cap",
-                inv_team, best_platform, best_ask * 100, MAX_INVERTED_PRICE * 100,
-            )
-            return
 
         # ── Fill simulation ──
         inv_shares = int(size_usd / best_ask)
