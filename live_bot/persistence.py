@@ -71,6 +71,14 @@ def maybe_reset_simulation(portfolio) -> bool:
     portfolio.midgame_value_pnl = 0.0
     portfolio.positions.clear()
 
+    # Wipe inverted portfolio
+    try:
+        if INVERTED_FILE.exists():
+            INVERTED_FILE.unlink()
+            logger.warning("Wiped inverted positions file")
+    except OSError:
+        logger.exception("Failed to wipe inverted positions file")
+
     logger.warning("✅ Simulation reset complete — $%.0f balance, 0 positions, trade log wiped", balance)
     return True
 
@@ -297,6 +305,7 @@ def save_inverted(inv_portfolio) -> None:
         "created_at": inv_portfolio.created_at,
         "skipped_not_complementary": inv_portfolio.skipped_not_complementary,
         "skipped_no_price": inv_portfolio.skipped_no_price,
+        "skipped_price_too_high": inv_portfolio.skipped_price_too_high,
         "skipped_fill_missed": inv_portfolio.skipped_fill_missed,
         "positions": [
             {
@@ -344,6 +353,7 @@ def load_inverted(inv_portfolio) -> int:
         inv_portfolio.created_at = data.get("created_at", inv_portfolio.created_at)
         inv_portfolio.skipped_not_complementary = data.get("skipped_not_complementary", 0)
         inv_portfolio.skipped_no_price = data.get("skipped_no_price", 0)
+        inv_portfolio.skipped_price_too_high = data.get("skipped_price_too_high", 0)
         inv_portfolio.skipped_fill_missed = data.get("skipped_fill_missed", 0)
 
         from live_bot.portfolio import InvertedPosition
