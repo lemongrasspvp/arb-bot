@@ -16,6 +16,10 @@ SIMULATION_MODE = os.getenv("LIVE_BOT_SIMULATION", "true").lower() == "true"
 ENABLE_ARB = os.getenv("ENABLE_ARB", "false").lower() == "true"
 ENABLE_VALUE = os.getenv("ENABLE_VALUE", "true").lower() == "true"
 ENABLE_INVERTED = os.getenv("ENABLE_INVERTED", "false").lower() == "true"
+# Max price for inverted (opposite-side) trades. If the opposite token
+# costs more than this, skip — the risk/reward is terrible on heavy favorites.
+# e.g. main buys at 30¢ → opposite is ~70¢ → OK. Main buys at 15¢ → opposite ~85¢ → skip.
+MAX_INVERTED_PRICE = float(os.getenv("MAX_INVERTED_PRICE", "0.75"))
 
 # ── Polymarket credentials ───────────────────────────────────────────
 POLYMARKET_PRIVATE_KEY = os.getenv("POLYMARKET_PRIVATE_KEY", "")
