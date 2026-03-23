@@ -113,6 +113,7 @@ def _render_html(portfolio, inverted_portfolio=None) -> str:
     settlement_entries = [t for t in trades if t.get("type") == "SETTLEMENT"]
 
     # Build P&L chart data from settlements
+    inv = inverted_portfolio
     inv_pnl_history = inv.pnl_history if inv else []
     pnl_svg = _build_pnl_chart(settlement_entries, inv_pnl_history=inv_pnl_history)
 
