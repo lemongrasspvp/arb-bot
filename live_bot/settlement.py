@@ -24,6 +24,7 @@ async def settlement_loop(
     registry,
     persistence_save_fn,
     shutdown_event: asyncio.Event,
+    inverted_portfolio=None,
 ) -> None:
     """Periodically check if open positions have resolved and settle them."""
     log_event("SETTLEMENT_START", "Settlement checker started")
@@ -130,6 +131,17 @@ async def settlement_loop(
                     pos.team, pos.platform, pos.match_id,
                     label, payout_per_share, pnl, clv_pct * 100, pin_drift_pct * 100,
                 )
+
+                # Settle linked inverted position (opposite payout)
+                if inverted_portfolio and getattr(pos, 'trade_id', ''):
+                    try:
+                        inv_pps = 1.0 - payout_per_share
+                        inv_pnl = inverted_portfolio.settle_by_linked_id(
+                            pos.trade_id, inv_pps,
+                        )
+                        # inv_pnl is None if no matching inverted position
+                    except Exception:
+                        logger.debug("Inverted settlement failed", exc_info=True)
 
             except Exception:
                 logger.exception("Error checking resolution for %s", pos.market_id)

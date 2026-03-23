@@ -5,11 +5,12 @@ import logging
 import os
 from pathlib import Path
 
-from live_bot.config import POSITIONS_FILE_PATH, TRADE_LOG_PATH
+from live_bot.config import POSITIONS_FILE_PATH, TRADE_LOG_PATH, DATA_DIR
 
 logger = logging.getLogger(__name__)
 
 POSITIONS_FILE = Path(POSITIONS_FILE_PATH)
+INVERTED_FILE = Path(DATA_DIR) / "inverted_positions.json" if DATA_DIR else Path("inverted_positions.json")
 
 
 def maybe_reset_simulation(portfolio) -> bool:
@@ -109,6 +110,7 @@ def save_positions(portfolio) -> None:
                 "pinnacle_prob_latest": p.pinnacle_prob_latest,
                 "pinnacle_prob_pregame_close": p.pinnacle_prob_pregame_close,
                 "shadow_exits": p.shadow_exits,
+                "trade_id": p.trade_id,
             }
             for p in portfolio.positions
         ],
@@ -176,6 +178,7 @@ def load_positions(portfolio) -> int:
                 pinnacle_prob_latest=p_data.get("pinnacle_prob_latest", 0.0),
                 pinnacle_prob_pregame_close=p_data.get("pinnacle_prob_pregame_close", 0.0),
                 shadow_exits=p_data.get("shadow_exits", {}),
+                trade_id=p_data.get("trade_id", ""),
             )
             portfolio.positions.append(pos)
 
@@ -273,3 +276,101 @@ def backfill_counters(portfolio) -> int:
         )
 
     return filled
+
+
+# ── Inverted portfolio persistence ────────────────────────────────────
+
+
+def save_inverted(inv_portfolio) -> None:
+    """Save inverted shadow portfolio state to disk."""
+    if inv_portfolio is None:
+        return
+    data = {
+        "starting_balance": inv_portfolio.starting_balance,
+        "current_balance": inv_portfolio.current_balance,
+        "total_pnl": inv_portfolio.total_pnl,
+        "trade_count": inv_portfolio.trade_count,
+        "settled_count": inv_portfolio.settled_count,
+        "win_count": inv_portfolio.win_count,
+        "loss_count": inv_portfolio.loss_count,
+        "pnl_history": inv_portfolio.pnl_history,
+        "created_at": inv_portfolio.created_at,
+        "skipped_not_complementary": inv_portfolio.skipped_not_complementary,
+        "skipped_no_price": inv_portfolio.skipped_no_price,
+        "skipped_fill_missed": inv_portfolio.skipped_fill_missed,
+        "positions": [
+            {
+                "trade_id": p.trade_id,
+                "linked_trade_id": p.linked_trade_id,
+                "match_id": p.match_id,
+                "match_name": p.match_name,
+                "platform": p.platform,
+                "market_id": p.market_id,
+                "team": p.team,
+                "price": p.price,
+                "size": p.size,
+                "cost_usd": p.cost_usd,
+                "opened_at": p.opened_at,
+                "timing": p.timing,
+                "pin_prob": p.pin_prob,
+            }
+            for p in inv_portfolio.positions
+        ],
+    }
+    try:
+        INVERTED_FILE.write_text(json.dumps(data, indent=2))
+        logger.debug("Saved %d inverted positions to %s", len(inv_portfolio.positions), INVERTED_FILE)
+    except OSError:
+        logger.exception("Failed to save inverted positions")
+
+
+def load_inverted(inv_portfolio) -> int:
+    """Restore inverted portfolio from disk. Returns count of positions loaded."""
+    if not INVERTED_FILE.exists():
+        logger.info("No saved inverted positions found")
+        return 0
+
+    try:
+        data = json.loads(INVERTED_FILE.read_text())
+
+        inv_portfolio.starting_balance = data.get("starting_balance", inv_portfolio.starting_balance)
+        inv_portfolio.current_balance = data.get("current_balance", inv_portfolio.starting_balance)
+        inv_portfolio.total_pnl = data.get("total_pnl", 0.0)
+        inv_portfolio.trade_count = data.get("trade_count", 0)
+        inv_portfolio.settled_count = data.get("settled_count", 0)
+        inv_portfolio.win_count = data.get("win_count", 0)
+        inv_portfolio.loss_count = data.get("loss_count", 0)
+        inv_portfolio.pnl_history = data.get("pnl_history", [])
+        inv_portfolio.created_at = data.get("created_at", inv_portfolio.created_at)
+        inv_portfolio.skipped_not_complementary = data.get("skipped_not_complementary", 0)
+        inv_portfolio.skipped_no_price = data.get("skipped_no_price", 0)
+        inv_portfolio.skipped_fill_missed = data.get("skipped_fill_missed", 0)
+
+        from live_bot.portfolio import InvertedPosition
+        for p in data.get("positions", []):
+            inv_portfolio.positions.append(InvertedPosition(
+                trade_id=p["trade_id"],
+                linked_trade_id=p["linked_trade_id"],
+                match_id=p["match_id"],
+                match_name=p.get("match_name", ""),
+                platform=p["platform"],
+                market_id=p["market_id"],
+                team=p["team"],
+                price=p["price"],
+                size=p["size"],
+                cost_usd=p["cost_usd"],
+                opened_at=p["opened_at"],
+                timing=p.get("timing", ""),
+                pin_prob=p.get("pin_prob", 0.0),
+            ))
+
+        loaded = len(inv_portfolio.positions)
+        logger.info(
+            "Loaded inverted portfolio: %d positions, balance=$%.2f, P&L=$%.2f",
+            loaded, inv_portfolio.current_balance, inv_portfolio.total_pnl,
+        )
+        return loaded
+
+    except Exception:
+        logger.exception("Failed to load inverted positions from %s", INVERTED_FILE)
+        return 0

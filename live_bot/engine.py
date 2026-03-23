@@ -3,12 +3,14 @@
 import asyncio
 import logging
 import time
+import uuid
 
 from datetime import datetime, timezone
 
 from live_bot.config import (
     ENABLE_ARB,
     ENABLE_VALUE,
+    ENABLE_INVERTED,
     MIN_ARB_PROFIT_PCT,
     MIN_VALUE_EDGE_PCT,
     MIDGAME_VALUE_EDGE_PCT,
@@ -201,6 +203,9 @@ class ArbEngine:
 
         # Throttle full-registry scans on Pinnacle polls
         self._last_pinnacle_scan: float = 0.0
+
+        # Inverted shadow portfolio (set externally from main.py)
+        self.inverted_portfolio = None
 
         # Async lock to prevent concurrent portfolio modifications
         self._portfolio_lock = asyncio.Lock()
@@ -1067,6 +1072,7 @@ class ArbEngine:
                 pin_prob, edge, size, timing, depth_usd, price_age,
                 pin_age_at_signal=pin_age_at_signal,
                 mkt_age_at_signal=mkt_age_at_signal,
+                team_side=team_side,
             )
 
     async def _execute_value(
@@ -1074,6 +1080,7 @@ class ArbEngine:
         market_price, pin_prob, edge, size_usd, timing="pregame",
         depth_usd=0.0, price_age=0.0,
         pin_age_at_signal=0.0, mkt_age_at_signal=0.0,
+        team_side="a",
     ) -> None:
         """Execute a value bet — single leg."""
         async with self._portfolio_lock:
@@ -1082,6 +1089,7 @@ class ArbEngine:
                 market_price, pin_prob, edge, size_usd, timing,
                 depth_usd, price_age,
                 pin_age_at_signal, mkt_age_at_signal,
+                team_side=team_side,
             )
 
     async def _execute_value_inner(
@@ -1089,6 +1097,7 @@ class ArbEngine:
         market_price, pin_prob, edge, size_usd, timing="pregame",
         depth_usd=0.0, price_age=0.0,
         pin_age_at_signal=0.0, mkt_age_at_signal=0.0,
+        team_side="a",
     ) -> None:
         """Inner value bet execution (called under portfolio lock)."""
         start = time.time()
@@ -1166,11 +1175,15 @@ class ArbEngine:
             )
             return
 
+        # Generate trade_id for 1:1 linking with inverted portfolio
+        trade_id = str(uuid.uuid4())
+
         # Pass market_id and condition_id for settlement tracking
         self.portfolio.record_value_trade(
             trade,
             market_id=market_id,
             condition_id=match.poly_condition_id if platform == "polymarket" else "",
+            trade_id=trade_id,
         )
         log_trade(
             "VALUE_BET", "VALUE",
@@ -1187,8 +1200,113 @@ class ArbEngine:
                 "pin_age_at_signal": round(pin_age_at_signal, 1),
                 "mkt_age_at_signal": round(mkt_age_at_signal, 1),
                 "pin_age_at_order": round(pin_age_at_order, 1),
+                "trade_id": trade_id,
             },
         )
 
+        # ── Inverted shadow portfolio: bet the opposite side ──
+        if self.inverted_portfolio and ENABLE_INVERTED:
+            try:
+                await self._record_inverted(
+                    match, platform, team_side, trade_id,
+                    trade.size_usd, pin_prob, timing,
+                )
+            except Exception:
+                logger.debug("Inverted trade recording failed", exc_info=True)
+
         if self._on_trade:
             self._on_trade()
+
+    @staticmethod
+    def _is_complementary(match, team_side, platform) -> tuple[bool, str]:
+        """Check if the opposite token represents the exhaustive binary complement.
+
+        Only allows inverted trades on binary H2H markets where
+        Team B YES == Team A NO (exhaustive and mutually exclusive).
+        """
+        if platform == "polymarket":
+            has_a = bool(match.poly_token_id_a)
+            has_b = bool(match.poly_token_id_b)
+        else:
+            has_a = bool(match.kalshi_ticker_a)
+            has_b = bool(match.kalshi_ticker_b)
+
+        if not (has_a and has_b):
+            return False, "opposite token missing on platform"
+
+        if match.pinnacle_prob_a > 0 and match.pinnacle_prob_b > 0:
+            prob_sum = match.pinnacle_prob_a + match.pinnacle_prob_b
+            if prob_sum < 0.90 or prob_sum > 1.10:
+                return False, f"prob_sum={prob_sum:.2f} not binary"
+        else:
+            return False, "missing pinnacle probs for complementarity check"
+
+        if len(match.teams) != 2:
+            return False, f"not binary: {len(match.teams)} outcomes"
+
+        return True, "ok"
+
+    async def _record_inverted(
+        self, match, platform, team_side, linked_trade_id,
+        size_usd, pin_prob, timing,
+    ) -> None:
+        """Record an inverted (opposite-side) shadow trade."""
+        inv = self.inverted_portfolio
+
+        # Complementarity guard
+        ok, reason = self._is_complementary(match, team_side, platform)
+        if not ok:
+            inv.skipped_not_complementary += 1
+            logger.info(
+                "Inverted skip (not complementary): %s — %s",
+                match.match_id[:25], reason,
+            )
+            return
+
+        # Find opposite token
+        if team_side == "a":
+            inv_market_id = match.poly_token_id_b if platform == "polymarket" else match.kalshi_ticker_b
+            inv_team = match.teams[1]
+        else:
+            inv_market_id = match.poly_token_id_a if platform == "polymarket" else match.kalshi_ticker_a
+            inv_team = match.teams[0]
+
+        # Get opposite side price from cache
+        inv_cached = self.prices[platform].get(inv_market_id, {})
+        inv_ask = inv_cached.get("best_ask", 0)
+        if inv_ask <= 0:
+            inv.skipped_no_price += 1
+            logger.info("Inverted skip (no price): %s %s", inv_team, platform)
+            return
+
+        # Fill simulation on opposite token (same realism as main bot)
+        inv_shares = int(size_usd / inv_ask)
+        if inv_shares < 1:
+            inv.skipped_no_price += 1
+            return
+
+        inv_filled_shares, inv_fill_price = await simulate_value_fill_recheck(
+            platform, inv_market_id, inv_ask, inv_shares, FILL_RECHECK_DELAY,
+        )
+        if inv_filled_shares <= 0:
+            inv.skipped_fill_missed += 1
+            logger.info("Inverted skip (fill missed): %s %s", inv_team, platform)
+            return
+
+        inv_cost = inv_filled_shares * inv_fill_price
+        inv_trade_id = str(uuid.uuid4())
+
+        inv.record_trade(
+            trade_id=inv_trade_id,
+            linked_trade_id=linked_trade_id,
+            match_id=match.match_id,
+            match_name=f"{match.teams[0]} vs {match.teams[1]}",
+            platform=platform,
+            market_id=inv_market_id,
+            team=inv_team,
+            price=inv_fill_price,
+            size=inv_filled_shares,
+            cost_usd=inv_cost,
+            timing=timing,
+            pin_prob=1.0 - pin_prob,
+        )

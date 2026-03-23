@@ -15,6 +15,7 @@ SIMULATION_MODE = os.getenv("LIVE_BOT_SIMULATION", "true").lower() == "true"
 # ── Strategy toggles ─────────────────────────────────────────────────
 ENABLE_ARB = os.getenv("ENABLE_ARB", "false").lower() == "true"
 ENABLE_VALUE = os.getenv("ENABLE_VALUE", "true").lower() == "true"
+ENABLE_INVERTED = os.getenv("ENABLE_INVERTED", "false").lower() == "true"
 
 # ── Polymarket credentials ───────────────────────────────────────────
 POLYMARKET_PRIVATE_KEY = os.getenv("POLYMARKET_PRIVATE_KEY", "")

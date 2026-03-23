@@ -20,6 +20,7 @@ from live_bot.config import (
     SIMULATION_MODE,
     ENABLE_ARB,
     ENABLE_VALUE,
+    ENABLE_INVERTED,
     REGISTRY_REFRESH_INTERVAL,
     PINNACLE_POLL_INTERVAL,
     MAX_POSITION_USD,
@@ -165,7 +166,8 @@ def _prune_stale_matches(registry) -> int:
     return len(stale_ids)
 
 
-async def _status_printer(portfolio, shutdown_event: asyncio.Event) -> None:
+async def _status_printer(portfolio, shutdown_event: asyncio.Event,
+                         inverted_portfolio=None) -> None:
     """Print portfolio status periodically."""
     while not shutdown_event.is_set():
         try:
@@ -174,7 +176,11 @@ async def _status_printer(portfolio, shutdown_event: asyncio.Event) -> None:
         except asyncio.TimeoutError:
             pass
 
-        console.print(f"\n[dim]{portfolio.summary()}[/dim]\n")
+        console.print(f"\n[dim]{portfolio.summary()}[/dim]")
+        if inverted_portfolio:
+            console.print(f"[dim]{inverted_portfolio.summary()}[/dim]\n")
+        else:
+            console.print()
 
 
 async def run_bot(live: bool = False) -> None:
@@ -189,7 +195,7 @@ async def run_bot(live: bool = False) -> None:
     from live_bot.execution.kalshi_exec import KalshiExecutor
     from live_bot.portfolio import PaperPortfolio
     from live_bot.settlement import settlement_loop
-    from live_bot.persistence import save_positions, load_positions
+    from live_bot.persistence import save_positions, load_positions, save_inverted, load_inverted
     from live_bot.dashboard import dashboard_server
 
     simulation = not live
@@ -224,6 +230,7 @@ async def run_bot(live: bool = False) -> None:
     table.add_row("Simulate Kalshi WS", "✅ Yes (no REST penalty)" if SIMULATE_KALSHI_WS else "❌ No (REST +7.5s)")
     table.add_row("Min arb depth", f"${MIN_ARB_DEPTH_USD}")
     table.add_row("Arb execution", "Sequential (harder leg first)")
+    table.add_row("Inverted portfolio", "✅ Tracking" if ENABLE_INVERTED else "❌ Disabled")
     console.print(table)
     console.print()
 
@@ -289,11 +296,32 @@ async def run_bot(live: bool = False) -> None:
             from live_bot.persistence import save_positions
             save_positions(portfolio)
 
+    # Step 3b: Initialize inverted shadow portfolio
+    inverted_portfolio = None
+    if ENABLE_INVERTED:
+        from live_bot.portfolio import InvertedPortfolio
+        inverted_portfolio = InvertedPortfolio(starting_balance=portfolio.current_balance)
+        loaded_inv = load_inverted(inverted_portfolio)
+        if loaded_inv:
+            console.print(f"[green]Restored {loaded_inv} inverted positions (P&L=${inverted_portfolio.total_pnl:+.2f})[/green]")
+        else:
+            console.print(f"[cyan]Inverted portfolio: starting at ${inverted_portfolio.starting_balance:.2f}[/cyan]")
+
     # Step 4: Initialize engine
+    def _on_trade():
+        save_positions(portfolio)
+        if inverted_portfolio:
+            try:
+                save_inverted(inverted_portfolio)
+            except Exception:
+                pass
+
     engine = ArbEngine(
         registry, poly_exec, kalshi_exec, portfolio,
-        on_trade_fn=lambda: save_positions(portfolio),
+        on_trade_fn=_on_trade,
     )
+    if inverted_portfolio:
+        engine.inverted_portfolio = inverted_portfolio
 
     # Seed engine price cache with scanner data so value checks work
     # immediately, without waiting for WS to send an update.
@@ -345,13 +373,18 @@ async def run_bot(live: bool = False) -> None:
             "registry_refresher": lambda: _registry_refresher(
                 registry, shutdown_event, new_poly_tokens, new_kalshi_tickers,
             ),
-            "status_printer": lambda: _status_printer(portfolio, shutdown_event),
+            "status_printer": lambda: _status_printer(
+                portfolio, shutdown_event, inverted_portfolio=inverted_portfolio,
+            ),
             "settlement_checker": lambda: settlement_loop(
                 portfolio, registry,
-                lambda: save_positions(portfolio),
+                _on_trade,
                 shutdown_event,
+                inverted_portfolio=inverted_portfolio,
             ),
-            "dashboard": lambda: dashboard_server(portfolio, shutdown_event),
+            "dashboard": lambda: dashboard_server(
+                portfolio, shutdown_event, inverted_portfolio=inverted_portfolio,
+            ),
         }
 
     task_factories = _make_tasks()
@@ -402,12 +435,19 @@ async def run_bot(live: bool = False) -> None:
 
         # Save positions before exit
         save_positions(portfolio)
+        if inverted_portfolio:
+            try:
+                save_inverted(inverted_portfolio)
+            except Exception:
+                pass
         console.print("[dim]Positions saved to disk[/dim]")
 
         # Final summary
         console.print()
         console.print("[bold cyan]═══ Session Summary ═══[/bold cyan]")
         console.print(portfolio.summary())
+        if inverted_portfolio:
+            console.print(inverted_portfolio.summary())
         from live_bot.config import TRADE_LOG_PATH
         console.print(f"[dim]Trade log: {TRADE_LOG_PATH}[/dim]")
         console.print()

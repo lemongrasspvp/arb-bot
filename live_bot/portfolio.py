@@ -2,6 +2,7 @@
 
 import logging
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -56,6 +57,7 @@ class Position:
     pinnacle_prob_latest: float = 0.0    # Last known Pinnacle prob (updated each poll, for closing line)
     pinnacle_prob_pregame_close: float = 0.0  # Last PRE-GAME Pinnacle prob (not contaminated by live odds)
     shadow_exits: dict = None  # Shadow early-exit checkpoints: {"30m": {"bid_vwap": ..., "pnl": ..., ...}}
+    trade_id: str = ""         # Unique ID linking this position to its inverted counterpart
 
     def __post_init__(self):
         if self.shadow_exits is None:
@@ -196,7 +198,8 @@ class PaperPortfolio:
         )
 
     def record_value_trade(
-        self, trade: Trade, market_id: str = "", condition_id: str = ""
+        self, trade: Trade, market_id: str = "", condition_id: str = "",
+        trade_id: str = "",
     ) -> None:
         """Record a filled value bet (single leg)."""
         self._check_daily_reset()
@@ -227,6 +230,7 @@ class PaperPortfolio:
                 timing=timing,
                 condition_id=condition_id,
                 pinnacle_prob_at_entry=trade.pinnacle_prob,
+                trade_id=trade_id,
             ))
             self.current_balance -= trade.size_usd
             logger.info(
@@ -338,3 +342,130 @@ class PaperPortfolio:
             f"  Avg Edge: {avg_edge:.1f}%",
         ]
         return "\n".join(lines)
+
+
+# ── Inverted (Contrarian) Shadow Portfolio ────────────────────────────
+
+
+@dataclass
+class InvertedPosition:
+    """A shadow position on the opposite side of a main trade."""
+    trade_id: str           # unique id for this inverted trade
+    linked_trade_id: str    # points to the main trade's trade_id
+    match_id: str
+    match_name: str
+    platform: str
+    market_id: str          # opposite token id
+    team: str               # opposite team name
+    price: float            # fill price on opposite token
+    size: float             # shares filled
+    cost_usd: float         # total USD spent
+    opened_at: float        # timestamp
+    timing: str = ""
+    pin_prob: float = 0.0   # 1 - original pin_prob
+
+
+@dataclass
+class InvertedPortfolio:
+    """Shadow portfolio that bets the opposite side of every main trade.
+
+    Same-dollar exposure: each inverted trade risks the same USD as the
+    original, but on the complementary binary token. This tests whether
+    the signal direction is backwards.
+    """
+    starting_balance: float = 3000.0
+    current_balance: float = 3000.0
+    positions: list[InvertedPosition] = field(default_factory=list)
+    total_pnl: float = 0.0
+    trade_count: int = 0
+    settled_count: int = 0
+    win_count: int = 0
+    loss_count: int = 0
+    pnl_history: list[float] = field(default_factory=list)  # running P&L after each settlement
+    created_at: float = field(default_factory=time.time)
+
+    # Counters for diagnostics
+    skipped_not_complementary: int = 0
+    skipped_no_price: int = 0
+    skipped_fill_missed: int = 0
+
+    @property
+    def win_rate(self) -> float:
+        if self.settled_count == 0:
+            return 0.0
+        return self.win_count / self.settled_count * 100
+
+    @property
+    def total_portfolio_value(self) -> float:
+        deployed = sum(p.cost_usd for p in self.positions)
+        return self.current_balance + deployed
+
+    def record_trade(
+        self, *, trade_id: str, linked_trade_id: str,
+        match_id: str, match_name: str, platform: str, market_id: str,
+        team: str, price: float, size: float, cost_usd: float,
+        timing: str = "", pin_prob: float = 0.0,
+    ) -> None:
+        """Record an inverted shadow trade."""
+        self.positions.append(InvertedPosition(
+            trade_id=trade_id,
+            linked_trade_id=linked_trade_id,
+            match_id=match_id,
+            match_name=match_name,
+            platform=platform,
+            market_id=market_id,
+            team=team,
+            price=price,
+            size=size,
+            cost_usd=cost_usd,
+            opened_at=time.time(),
+            timing=timing,
+            pin_prob=pin_prob,
+        ))
+        self.current_balance -= cost_usd
+        self.trade_count += 1
+        logger.info(
+            "INV TRADE: %s %s@%s at %.0f¢ — %d shares ($%.2f) [linked=%s] | balance=$%.2f",
+            team, platform, match_id[:25],
+            price * 100, int(size), cost_usd,
+            linked_trade_id[:8], self.current_balance,
+        )
+
+    def settle_by_linked_id(self, linked_trade_id: str,
+                            payout_per_share: float) -> float | None:
+        """Settle the inverted position linked to a main trade.
+
+        Returns P&L or None if no matching position found.
+        """
+        for i, pos in enumerate(self.positions):
+            if pos.linked_trade_id == linked_trade_id:
+                gross = pos.size * payout_per_share
+                pnl = gross - pos.cost_usd
+                self.total_pnl += pnl
+                self.current_balance += pos.cost_usd + pnl
+                self.settled_count += 1
+                if pnl > 0:
+                    self.win_count += 1
+                elif pnl < 0:
+                    self.loss_count += 1
+                self.pnl_history.append(self.total_pnl)
+
+                label = "WON" if payout_per_share >= 0.99 else "LOST" if payout_per_share <= 0.01 else f"PARTIAL@{payout_per_share:.2f}"
+                logger.info(
+                    "INV SETTLED: %s %s — %s | P&L=$%.2f | inv_balance=$%.2f | inv_total=$%.2f",
+                    pos.team, pos.platform, label, pnl,
+                    self.current_balance, self.total_pnl,
+                )
+                self.positions.pop(i)
+                return pnl
+        return None
+
+    def summary(self) -> str:
+        """One-line summary for console logging."""
+        wr = f"{self.win_rate:.0f}%" if self.settled_count else "n/a"
+        return (
+            f"Inverted: ${self.current_balance:.2f} | P&L: ${self.total_pnl:+.2f} | "
+            f"{self.trade_count} trades, {self.settled_count} settled ({wr} win) | "
+            f"{len(self.positions)} open | "
+            f"skips: comp={self.skipped_not_complementary} price={self.skipped_no_price} fill={self.skipped_fill_missed}"
+        )

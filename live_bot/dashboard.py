@@ -22,7 +22,8 @@ _start_time = time.time()
 DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
 
 
-async def dashboard_server(portfolio, shutdown_event: asyncio.Event) -> None:
+async def dashboard_server(portfolio, shutdown_event: asyncio.Event,
+                          inverted_portfolio=None) -> None:
     """Run a tiny HTTP server that serves the dashboard page."""
 
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
@@ -66,7 +67,7 @@ async def dashboard_server(portfolio, shutdown_event: asyncio.Event) -> None:
                     await writer.drain()
                     return
 
-            html = _render_html(portfolio)
+            html = _render_html(portfolio, inverted_portfolio=inverted_portfolio)
             body = html.encode("utf-8")
             header = (
                 "HTTP/1.1 200 OK\r\n"
@@ -93,7 +94,7 @@ async def dashboard_server(portfolio, shutdown_event: asyncio.Event) -> None:
         logger.info("Dashboard server stopped")
 
 
-def _render_html(portfolio) -> str:
+def _render_html(portfolio, inverted_portfolio=None) -> str:
     """Generate the full dashboard HTML from current portfolio state."""
     now = datetime.now(CET)
     uptime_s = time.time() - _start_time
@@ -112,7 +113,8 @@ def _render_html(portfolio) -> str:
     settlement_entries = [t for t in trades if t.get("type") == "SETTLEMENT"]
 
     # Build P&L chart data from settlements
-    pnl_svg = _build_pnl_chart(settlement_entries)
+    inv_pnl_history = inv.pnl_history if inv else []
+    pnl_svg = _build_pnl_chart(settlement_entries, inv_pnl_history=inv_pnl_history)
 
     # Open positions
     positions_html = _build_positions_table(portfolio)
@@ -157,6 +159,73 @@ def _render_html(portfolio) -> str:
 
     # Shadow exit summary stats
     shadow_stats = _build_shadow_summary(settlement_entries)
+
+    # Inverted portfolio sections
+    inv_cards_html = ""
+    inv_positions_html = ""
+    inv_comparison_html = ""
+    inv = inverted_portfolio
+    if inv:
+        inv_pnl_class = "positive" if inv.total_pnl >= 0 else "negative"
+        inv_card_color = "green" if inv.total_pnl >= 0 else "red"
+        inv_wr = f"{inv.win_rate:.0f}%" if inv.settled_count else "n/a"
+        inv_cards_html = f"""
+<div class="cards">
+    <div class="card {inv_card_color}">
+        <div class="card-label">Inverted Balance</div>
+        <div class="card-value">${inv.current_balance:.2f}</div>
+        <div class="meta">Started ${inv.starting_balance:.0f}</div>
+    </div>
+    <div class="card {inv_card_color}">
+        <div class="card-label">Inverted P&amp;L</div>
+        <div class="card-value {inv_pnl_class}">${inv.total_pnl:+.2f}</div>
+        <div class="meta">{inv.trade_count} trades | {inv.settled_count} settled</div>
+    </div>
+    <div class="card blue">
+        <div class="card-label">Inverted Open</div>
+        <div class="card-value">{len(inv.positions)}</div>
+        <div class="meta">${sum(p.cost_usd for p in inv.positions):.0f} deployed</div>
+    </div>
+    <div class="card yellow">
+        <div class="card-label">Inverted Win Rate</div>
+        <div class="card-value">{inv_wr}</div>
+        <div class="meta">{inv.win_count}W / {inv.loss_count}L | skip: {inv.skipped_not_complementary + inv.skipped_no_price + inv.skipped_fill_missed}</div>
+    </div>
+</div>"""
+
+        # Comparison block
+        pnl_diff = inv.total_pnl - portfolio.total_pnl
+        diff_class = "positive" if pnl_diff >= 0 else "negative"
+        main_wr_val = 0.0
+        if settlement_entries:
+            main_wins = sum(1 for s in settlement_entries if s.get("extra", {}).get("won") is True)
+            main_wr_val = main_wins / len(settlement_entries) * 100
+        inv_comparison_html = f"""<div class="section">
+<h2>Main vs Inverted Comparison</h2>
+<table>
+<tr><th>Metric</th><th>Main</th><th>Inverted</th><th>Diff</th></tr>
+<tr><td>Total P&amp;L</td>
+    <td class="{'positive' if portfolio.total_pnl >= 0 else 'negative'}">${portfolio.total_pnl:+.2f}</td>
+    <td class="{inv_pnl_class}">${inv.total_pnl:+.2f}</td>
+    <td class="{diff_class}">${pnl_diff:+.2f}</td></tr>
+<tr><td>Win Rate</td>
+    <td>{main_wr_val:.0f}%</td>
+    <td>{inv_wr}</td>
+    <td>—</td></tr>
+<tr><td>Open Positions</td>
+    <td>{len(portfolio.positions)}</td>
+    <td>{len(inv.positions)}</td>
+    <td>—</td></tr>
+<tr><td>Trades</td>
+    <td>{portfolio.value_filled_count}</td>
+    <td>{inv.trade_count}</td>
+    <td>—</td></tr>
+</table>
+<p style="color:#8b949e;margin-top:8px;font-size:12px">Skips: not_complementary={inv.skipped_not_complementary} no_price={inv.skipped_no_price} fill_missed={inv.skipped_fill_missed}</p>
+</div>"""
+
+        # Inverted positions table
+        inv_positions_html = _build_inverted_positions_table(inv)
 
     # Pinnacle health
     pin_status = pinnacle_health["status"]
@@ -331,6 +400,12 @@ tr:hover {{ background: rgba(88, 166, 255, 0.04); }}
 
 {shadow_stats}
 
+{inv_cards_html}
+
+{inv_comparison_html}
+
+{inv_positions_html}
+
 </body>
 </html>"""
 
@@ -450,59 +525,88 @@ def _build_trades_table(trades: list[dict]) -> str:
 </div>"""
 
 
-def _build_pnl_chart(settlements: list[dict]) -> str:
-    """Build an inline SVG P&L chart from settlement entries."""
-    if len(settlements) < 2:
+def _build_pnl_chart(settlements: list[dict], inv_pnl_history: list[float] | None = None) -> str:
+    """Build an inline SVG P&L chart from settlement entries with optional inverted overlay."""
+    if len(settlements) < 2 and not inv_pnl_history:
         return """<div class="section">
 <h2>P&amp;L Over Time</h2>
 <div class="no-data">Need at least 2 settlements for chart</div>
 </div>"""
 
-    # Accumulate running P&L
-    points = []
+    # Accumulate running P&L for main portfolio
+    main_points = []
     running = 0.0
     for s in settlements:
         pnl = s.get("extra", {}).get("pnl", 0) if isinstance(s.get("extra"), dict) else s.get("pnl", 0)
         running += pnl
-        points.append(running)
+        main_points.append(running)
 
-    if not points:
+    inv_points = inv_pnl_history or []
+
+    if not main_points and not inv_points:
         return ""
 
+    # Combine all values for Y-axis scaling
+    all_values = main_points + inv_points
+    min_pnl = min(all_values) if all_values else 0
+    max_pnl = max(all_values) if all_values else 0
+    pnl_range = max_pnl - min_pnl if max_pnl != min_pnl else 1.0
+
     # SVG dimensions
-    w, h = 1140, 130
-    pad_x, pad_y = 40, 15
+    w, h = 1140, 150
+    pad_x, pad_y = 40, 20
     chart_w = w - 2 * pad_x
     chart_h = h - 2 * pad_y
 
-    min_pnl = min(points)
-    max_pnl = max(points)
-    pnl_range = max_pnl - min_pnl if max_pnl != min_pnl else 1.0
+    def _make_polyline(pts, max_len):
+        coords = []
+        for i, val in enumerate(pts):
+            x = pad_x + (i / max(max_len - 1, 1)) * chart_w
+            y = pad_y + chart_h - ((val - min_pnl) / pnl_range) * chart_h
+            coords.append(f"{x:.1f},{y:.1f}")
+        return " ".join(coords), coords
 
-    # Build polyline
-    coords = []
-    for i, val in enumerate(points):
-        x = pad_x + (i / max(len(points) - 1, 1)) * chart_w
-        y = pad_y + chart_h - ((val - min_pnl) / pnl_range) * chart_h
-        coords.append(f"{x:.1f},{y:.1f}")
+    max_len = max(len(main_points), len(inv_points), 2)
 
-    polyline = " ".join(coords)
-    line_color = "#4caf50" if points[-1] >= 0 else "#ef5350"
+    svg_lines = ""
 
     # Zero line
     zero_y = pad_y + chart_h - ((0 - min_pnl) / pnl_range) * chart_h
-    zero_line = ""
     if min_pnl < 0 < max_pnl:
-        zero_line = f'<line x1="{pad_x}" y1="{zero_y:.1f}" x2="{w - pad_x}" y2="{zero_y:.1f}" stroke="#30363d" stroke-dasharray="4"/>'
+        svg_lines += f'<line x1="{pad_x}" y1="{zero_y:.1f}" x2="{w - pad_x}" y2="{zero_y:.1f}" stroke="#30363d" stroke-dasharray="4"/>'
 
+    # Main line
+    if main_points:
+        main_poly, main_coords = _make_polyline(main_points, max_len)
+        main_color = "#4caf50" if main_points[-1] >= 0 else "#ef5350"
+        svg_lines += f'<polyline points="{main_poly}" fill="none" stroke="{main_color}" stroke-width="2"/>'
+        svg_lines += f'<circle cx="{main_coords[-1].split(",")[0]}" cy="{main_coords[-1].split(",")[1]}" r="3" fill="{main_color}"/>'
+
+    # Inverted line (orange)
+    if inv_points:
+        inv_poly, inv_coords = _make_polyline(inv_points, max_len)
+        inv_color = "#ff9800"
+        svg_lines += f'<polyline points="{inv_poly}" fill="none" stroke="{inv_color}" stroke-width="2" stroke-dasharray="6,3"/>'
+        svg_lines += f'<circle cx="{inv_coords[-1].split(",")[0]}" cy="{inv_coords[-1].split(",")[1]}" r="3" fill="{inv_color}"/>'
+
+    # Legend
+    legend = ""
+    if main_points and inv_points:
+        legend = (
+            f'<rect x="{w - 200}" y="5" width="10" height="10" fill="{main_color}"/>'
+            f'<text x="{w - 185}" y="14" fill="#8b949e" font-size="10">Main</text>'
+            f'<rect x="{w - 130}" y="5" width="10" height="10" fill="#ff9800"/>'
+            f'<text x="{w - 115}" y="14" fill="#8b949e" font-size="10">Inverted</text>'
+        )
+
+    total_settlements = len(main_points) + len(inv_points)
     return f"""<div class="section">
-<h2>P&amp;L Over Time ({len(points)} settlements)</h2>
+<h2>P&amp;L Over Time ({len(main_points)} main{f', {len(inv_points)} inverted' if inv_points else ''} settlements)</h2>
 <svg viewBox="0 0 {w} {h}" class="chart-container" preserveAspectRatio="none">
-{zero_line}
-<polyline points="{polyline}" fill="none" stroke="{line_color}" stroke-width="2"/>
+{svg_lines}
+{legend}
 <text x="{pad_x - 5}" y="{pad_y + 4}" fill="#8b949e" font-size="10" text-anchor="end">${max_pnl:+.0f}</text>
 <text x="{pad_x - 5}" y="{h - pad_y + 4}" fill="#8b949e" font-size="10" text-anchor="end">${min_pnl:+.0f}</text>
-<circle cx="{coords[-1].split(',')[0]}" cy="{coords[-1].split(',')[1]}" r="3" fill="{line_color}"/>
 </svg>
 </div>"""
 
@@ -632,6 +736,43 @@ def _build_shadow_summary(settlement_entries: list) -> str:
         </tr>
         {rows}
     </table>"""
+
+
+def _build_inverted_positions_table(inv_portfolio) -> str:
+    """Inverted portfolio open positions table."""
+    if not inv_portfolio or not inv_portfolio.positions:
+        if inv_portfolio:
+            return """<div class="section">
+<h2>Inverted Positions (Shadow)</h2>
+<div class="no-data">No open inverted positions</div>
+</div>"""
+        return ""
+
+    rows = ""
+    now = time.time()
+    for pos in inv_portfolio.positions:
+        age = _fmt_duration(now - pos.opened_at)
+        rows += (
+            f"<tr>"
+            f"<td>{pos.linked_trade_id[:8]}</td>"
+            f"<td>{_esc(pos.match_id[:25])}</td>"
+            f"<td>{_esc(pos.team)}</td>"
+            f"<td>{pos.platform}</td>"
+            f"<td>{pos.price * 100:.0f}\u00a2</td>"
+            f"<td>{int(pos.size)}</td>"
+            f"<td>${pos.cost_usd:.2f}</td>"
+            f"<td>{pos.timing}</td>"
+            f"<td>{age}</td>"
+            f"</tr>\n"
+        )
+
+    return f"""<div class="section">
+<h2>Inverted Positions ({len(inv_portfolio.positions)}) — Shadow</h2>
+<table>
+<tr><th>Linked</th><th>Match</th><th>Team</th><th>Platform</th><th>Price</th><th>Shares</th><th>Cost</th><th>Timing</th><th>Age</th></tr>
+{rows}
+</table>
+</div>"""
 
 
 def _fmt_duration(seconds: float) -> str:
