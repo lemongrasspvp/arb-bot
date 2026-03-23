@@ -11,6 +11,7 @@ from live_bot.config import (
     ENABLE_ARB,
     ENABLE_VALUE,
     ENABLE_INVERTED,
+    MAX_INVERTED_PRICE,
     MIN_ARB_PROFIT_PCT,
     MIN_VALUE_EDGE_PCT,
     MIDGAME_VALUE_EDGE_PCT,
@@ -1218,22 +1219,12 @@ class ArbEngine:
             self._on_trade()
 
     @staticmethod
-    def _is_complementary(match, team_side, platform) -> tuple[bool, str]:
-        """Check if the opposite token represents the exhaustive binary complement.
+    def _is_complementary(match) -> tuple[bool, str]:
+        """Check if the match is a binary exhaustive market.
 
         Only allows inverted trades on binary H2H markets where
         Team B YES == Team A NO (exhaustive and mutually exclusive).
         """
-        if platform == "polymarket":
-            has_a = bool(match.poly_token_id_a)
-            has_b = bool(match.poly_token_id_b)
-        else:
-            has_a = bool(match.kalshi_ticker_a)
-            has_b = bool(match.kalshi_ticker_b)
-
-        if not (has_a and has_b):
-            return False, "opposite token missing on platform"
-
         if match.pinnacle_prob_a > 0 and match.pinnacle_prob_b > 0:
             prob_sum = match.pinnacle_prob_a + match.pinnacle_prob_b
             if prob_sum < 0.90 or prob_sum > 1.10:
@@ -1250,11 +1241,16 @@ class ArbEngine:
         self, match, platform, team_side, linked_trade_id,
         size_usd, pin_prob, timing,
     ) -> None:
-        """Record an inverted (opposite-side) shadow trade."""
+        """Record an inverted (opposite-side) shadow trade.
+
+        Compares prices across Polymarket, Kalshi, and Pinnacle for the
+        opposite side and buys from whichever is cheapest. For Pinnacle,
+        uses the vigged (implied) price — what you'd actually pay.
+        """
         inv = self.inverted_portfolio
 
-        # Complementarity guard
-        ok, reason = self._is_complementary(match, team_side, platform)
+        # Complementarity guard (market-level, not platform-specific)
+        ok, reason = self._is_complementary(match)
         if not ok:
             inv.skipped_not_complementary += 1
             logger.info(
@@ -1263,35 +1259,87 @@ class ArbEngine:
             )
             return
 
-        # Find opposite token
+        # Determine opposite team
         if team_side == "a":
-            inv_market_id = match.poly_token_id_b if platform == "polymarket" else match.kalshi_ticker_b
             inv_team = match.teams[1]
         else:
-            inv_market_id = match.poly_token_id_a if platform == "polymarket" else match.kalshi_ticker_a
             inv_team = match.teams[0]
 
-        # Get opposite side price from cache
-        inv_cached = self.prices[platform].get(inv_market_id, {})
-        inv_ask = inv_cached.get("best_ask", 0)
-        if inv_ask <= 0:
+        # ── Collect prices from all platforms for the opposite side ──
+        # Each candidate: (platform_name, market_id, ask_price, has_orderbook)
+        candidates = []
+
+        # Polymarket opposite token
+        poly_id = match.poly_token_id_b if team_side == "a" else match.poly_token_id_a
+        if poly_id:
+            poly_cached = self.prices["polymarket"].get(poly_id, {})
+            poly_ask = poly_cached.get("best_ask", 0)
+            if poly_ask > 0:
+                candidates.append(("polymarket", poly_id, poly_ask, True))
+
+        # Kalshi opposite ticker
+        kalshi_id = match.kalshi_ticker_b if team_side == "a" else match.kalshi_ticker_a
+        if kalshi_id:
+            kalshi_cached = self.prices["kalshi"].get(kalshi_id, {})
+            kalshi_ask = kalshi_cached.get("best_ask", 0)
+            if kalshi_ask > 0:
+                # Add Kalshi fee to make comparison fair
+                kalshi_effective = kalshi_ask + _kalshi_fee(kalshi_ask)
+                candidates.append(("kalshi", kalshi_id, kalshi_effective, True))
+
+        # Pinnacle vigged (implied) price — what you'd actually pay
+        # Use the raw implied prob WITH vig, not the de-vigged prob
+        if team_side == "a":
+            pin_implied = match.pinnacle_implied_b
+        else:
+            pin_implied = match.pinnacle_implied_a
+        if pin_implied > 0:
+            candidates.append(("pinnacle", "pinnacle", pin_implied, False))
+
+        if not candidates:
             inv.skipped_no_price += 1
-            logger.info("Inverted skip (no price): %s %s", inv_team, platform)
+            logger.info("Inverted skip (no price on any platform): %s %s", inv_team, match.match_id[:25])
             return
 
-        # Fill simulation on opposite token (same realism as main bot)
-        inv_shares = int(size_usd / inv_ask)
+        # Pick cheapest
+        candidates.sort(key=lambda c: c[2])
+        best_platform, best_market_id, best_ask, has_orderbook = candidates[0]
+
+        logger.debug(
+            "Inverted price comparison: %s — %s",
+            inv_team,
+            " | ".join(f"{c[0]}={c[2]*100:.0f}¢" for c in candidates),
+        )
+
+        # Price cap: skip heavy favorites — terrible risk/reward
+        if best_ask > MAX_INVERTED_PRICE:
+            inv.skipped_price_too_high += 1
+            logger.info(
+                "Inverted skip (cheapest too expensive): %s best=%s at %.0f¢ > %.0f¢ cap",
+                inv_team, best_platform, best_ask * 100, MAX_INVERTED_PRICE * 100,
+            )
+            return
+
+        # ── Fill simulation ──
+        inv_shares = int(size_usd / best_ask)
         if inv_shares < 1:
             inv.skipped_no_price += 1
             return
 
-        inv_filled_shares, inv_fill_price = await simulate_value_fill_recheck(
-            platform, inv_market_id, inv_ask, inv_shares, FILL_RECHECK_DELAY,
-        )
-        if inv_filled_shares <= 0:
-            inv.skipped_fill_missed += 1
-            logger.info("Inverted skip (fill missed): %s %s", inv_team, platform)
-            return
+        if has_orderbook:
+            # Real platform with order book — use fill simulation
+            inv_filled_shares, inv_fill_price = await simulate_value_fill_recheck(
+                best_platform, best_market_id, best_ask, inv_shares, FILL_RECHECK_DELAY,
+            )
+            if inv_filled_shares <= 0:
+                inv.skipped_fill_missed += 1
+                logger.info("Inverted skip (fill missed): %s %s", inv_team, best_platform)
+                return
+        else:
+            # Pinnacle — no order book, assume fill at implied price
+            # Pinnacle has deep liquidity on major sports, fill is realistic
+            inv_filled_shares = inv_shares
+            inv_fill_price = best_ask
 
         inv_cost = inv_filled_shares * inv_fill_price
         inv_trade_id = str(uuid.uuid4())
@@ -1301,12 +1349,20 @@ class ArbEngine:
             linked_trade_id=linked_trade_id,
             match_id=match.match_id,
             match_name=f"{match.teams[0]} vs {match.teams[1]}",
-            platform=platform,
-            market_id=inv_market_id,
+            platform=best_platform,
+            market_id=best_market_id,
             team=inv_team,
             price=inv_fill_price,
             size=inv_filled_shares,
             cost_usd=inv_cost,
             timing=timing,
             pin_prob=1.0 - pin_prob,
+        )
+
+        logger.info(
+            "🔄 INVERTED: %s %s@%s at %.0f¢ (cheapest of %s) — %d shares ($%.2f) [linked=%s]",
+            inv_team, best_platform, match.match_id[:25],
+            inv_fill_price * 100,
+            "/".join(f"{c[0]}:{c[2]*100:.0f}¢" for c in candidates),
+            inv_filled_shares, inv_cost, linked_trade_id[:8],
         )
