@@ -384,7 +384,15 @@ class InvertedPortfolio:
     pnl_history: list[float] = field(default_factory=list)  # running P&L after each settlement
     created_at: float = field(default_factory=time.time)
 
-    # Counters for diagnostics
+    # Counters for diagnostics — filtered inverted strategy
+    created_default_bucket: int = 0    # 5-10% edge trades created
+    created_high_edge_bucket: int = 0  # 10%+ edge trades created (research)
+    settled_ok: int = 0
+    skipped_platform: int = 0
+    skipped_pin_prob: int = 0
+    skipped_time_to_start: int = 0
+    skipped_edge_low: int = 0
+    skipped_edge_high: int = 0
     skipped_not_complementary: int = 0
     skipped_no_price: int = 0
     skipped_fill_missed: int = 0
@@ -449,6 +457,7 @@ class InvertedPortfolio:
                 elif pnl < 0:
                     self.loss_count += 1
                 self.pnl_history.append(self.total_pnl)
+                self.settled_ok += 1
 
                 label = "WON" if payout_per_share >= 0.99 else "LOST" if payout_per_share <= 0.01 else f"PARTIAL@{payout_per_share:.2f}"
                 logger.info(
@@ -465,7 +474,11 @@ class InvertedPortfolio:
         wr = f"{self.win_rate:.0f}%" if self.settled_count else "n/a"
         return (
             f"Inverted: ${self.current_balance:.2f} | P&L: ${self.total_pnl:+.2f} | "
-            f"{self.trade_count} trades, {self.settled_count} settled ({wr} win) | "
+            f"created={self.created_default_bucket}+{self.created_high_edge_bucket}hi, "
+            f"{self.settled_count} settled ({wr} win) | "
             f"{len(self.positions)} open | "
-            f"skips: comp={self.skipped_not_complementary} price={self.skipped_no_price} fill={self.skipped_fill_missed}"
+            f"skips: plat={self.skipped_platform} prob={self.skipped_pin_prob} "
+            f"time={self.skipped_time_to_start} edge_lo={self.skipped_edge_low} "
+            f"edge_hi={self.skipped_edge_high} comp={self.skipped_not_complementary} "
+            f"price={self.skipped_no_price} fill={self.skipped_fill_missed}"
         )

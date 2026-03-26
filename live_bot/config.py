@@ -17,6 +17,19 @@ ENABLE_ARB = os.getenv("ENABLE_ARB", "false").lower() == "true"
 ENABLE_VALUE = os.getenv("ENABLE_VALUE", "true").lower() == "true"
 ENABLE_INVERTED = os.getenv("ENABLE_INVERTED", "false").lower() == "true"
 
+# ── Filtered inverted strategy ────────────────────────────────────────
+# Data-driven filters for the inverted (contrarian) shadow portfolio.
+# Default bucket: 5-10% edge, Polymarket only, ≥40% pin_prob, ≤4h to start.
+INVERTED_PLATFORM = os.getenv("INVERTED_PLATFORM", "polymarket")
+INVERTED_MIN_PIN_PROB = float(os.getenv("INVERTED_MIN_PIN_PROB", "0.40"))
+INVERTED_MAX_MINUTES_TO_START = float(os.getenv("INVERTED_MAX_MINUTES_TO_START", "240"))
+INVERTED_MIN_EDGE = float(os.getenv("INVERTED_MIN_EDGE", "0.05"))
+INVERTED_MAX_EDGE = float(os.getenv("INVERTED_MAX_EDGE", "0.10"))
+INVERTED_ENABLE_HIGH_EDGE_BUCKET = os.getenv("INVERTED_ENABLE_HIGH_EDGE_BUCKET", "false").lower() == "true"
+INVERTED_BINARY_ONLY = os.getenv("INVERTED_BINARY_ONLY", "true").lower() == "true"
+# Legacy broad mode: set to true to invert ALL trades without filters (old behavior)
+INVERTED_BROAD_MODE = os.getenv("INVERTED_BROAD_MODE", "false").lower() == "true"
+
 # ── Polymarket credentials ───────────────────────────────────────────
 POLYMARKET_PRIVATE_KEY = os.getenv("POLYMARKET_PRIVATE_KEY", "")
 POLYMARKET_FUNDER_ADDRESS = os.getenv("POLYMARKET_FUNDER_ADDRESS", "")

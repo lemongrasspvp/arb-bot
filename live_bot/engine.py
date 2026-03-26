@@ -26,6 +26,14 @@ from live_bot.config import (
     MAX_MATCH_DURATION_HOURS,
     MAX_POSITION_USD,
     FILL_RECHECK_DELAY,
+    INVERTED_PLATFORM,
+    INVERTED_MIN_PIN_PROB,
+    INVERTED_MAX_MINUTES_TO_START,
+    INVERTED_MIN_EDGE,
+    INVERTED_MAX_EDGE,
+    INVERTED_ENABLE_HIGH_EDGE_BUCKET,
+    INVERTED_BINARY_ONLY,
+    INVERTED_BROAD_MODE,
 )
 from live_bot.registry import MarketRegistry, TrackedMatch
 from live_bot.portfolio import PaperPortfolio, Trade
@@ -1209,7 +1217,7 @@ class ArbEngine:
             try:
                 await self._record_inverted(
                     match, platform, team_side, trade_id,
-                    trade.size_usd, pin_prob, timing,
+                    trade.size_usd, pin_prob, edge, timing,
                 )
             except Exception:
                 logger.debug("Inverted trade recording failed", exc_info=True)
@@ -1238,98 +1246,119 @@ class ArbEngine:
 
     async def _record_inverted(
         self, match, platform, team_side, linked_trade_id,
-        size_usd, pin_prob, timing,
+        size_usd, pin_prob, edge, timing,
     ) -> None:
-        """Record an inverted (opposite-side) shadow trade.
+        """Record a filtered inverted (opposite-side) shadow trade.
 
-        Compares prices across Polymarket, Kalshi, and Pinnacle for the
-        opposite side and buys from whichever is cheapest. For Pinnacle,
-        uses the vigged (implied) price — what you'd actually pay.
+        Data-driven filters: Polymarket only, ≥40% pin_prob, ≤4h to start,
+        5-10% edge (default bucket). Set INVERTED_BROAD_MODE=true to bypass
+        all filters and invert every trade (old behavior, recoverable).
         """
         inv = self.inverted_portfolio
 
-        # Complementarity guard (market-level, not platform-specific)
+        # ── Legacy broad mode: skip all filters if enabled ──
+        if not INVERTED_BROAD_MODE:
+            # Filter 1: Platform
+            if platform != INVERTED_PLATFORM:
+                inv.skipped_platform += 1
+                logger.debug("Inverted skip (platform): %s != %s", platform, INVERTED_PLATFORM)
+                return
+
+            # Filter 2: Pinnacle probability
+            if pin_prob < INVERTED_MIN_PIN_PROB:
+                inv.skipped_pin_prob += 1
+                logger.debug("Inverted skip (pin_prob): %.0f%% < %.0f%%", pin_prob * 100, INVERTED_MIN_PIN_PROB * 100)
+                return
+
+            # Filter 3: Time to start
+            minutes_to_start = None
+            if match.commence_time:
+                try:
+                    ct = match.commence_time
+                    if ct.endswith("Z"):
+                        ct = ct[:-1] + "+00:00"
+                    start = datetime.fromisoformat(ct)
+                    now_dt = datetime.now(timezone.utc)
+                    minutes_to_start = (start - now_dt).total_seconds() / 60
+                except (ValueError, TypeError):
+                    pass
+
+            if minutes_to_start is not None and minutes_to_start > INVERTED_MAX_MINUTES_TO_START:
+                inv.skipped_time_to_start += 1
+                logger.debug("Inverted skip (time_to_start): %.0fm > %.0fm", minutes_to_start, INVERTED_MAX_MINUTES_TO_START)
+                return
+
+            # Filter 4: Edge range
+            if edge < INVERTED_MIN_EDGE:
+                inv.skipped_edge_low += 1
+                logger.debug("Inverted skip (edge_low): %.1f%% < %.1f%%", edge * 100, INVERTED_MIN_EDGE * 100)
+                return
+
+            is_high_edge = edge >= INVERTED_MAX_EDGE
+            if is_high_edge and not INVERTED_ENABLE_HIGH_EDGE_BUCKET:
+                inv.skipped_edge_high += 1
+                logger.debug("Inverted skip (edge_high): %.1f%% >= %.1f%%", edge * 100, INVERTED_MAX_EDGE * 100)
+                return
+
+            # Filter 5: Binary market
+            if INVERTED_BINARY_ONLY:
+                if len(match.teams) != 2:
+                    inv.skipped_not_complementary += 1
+                    logger.debug("Inverted skip (not binary): %d teams", len(match.teams))
+                    return
+                if match.pinnacle_prob_a > 0 and match.pinnacle_prob_b > 0:
+                    prob_sum = match.pinnacle_prob_a + match.pinnacle_prob_b
+                    if prob_sum < 0.90 or prob_sum > 1.10:
+                        inv.skipped_not_complementary += 1
+                        logger.debug("Inverted skip (prob_sum): %.2f not binary", prob_sum)
+                        return
+                else:
+                    inv.skipped_not_complementary += 1
+                    logger.debug("Inverted skip (missing pinnacle probs)")
+                    return
+        else:
+            is_high_edge = edge >= INVERTED_MAX_EDGE
+
+        # ── Complementarity guard ──
         ok, reason = self._is_complementary(match)
         if not ok:
             inv.skipped_not_complementary += 1
-            logger.info(
-                "Inverted skip (not complementary): %s — %s",
-                match.match_id[:25], reason,
-            )
+            logger.info("Inverted skip (not complementary): %s — %s", match.match_id[:25], reason)
             return
 
-        # Determine opposite team
+        # ── Determine opposite side (Polymarket only for filtered mode) ──
         if team_side == "a":
             inv_team = match.teams[1]
+            inv_market_id = match.poly_token_id_b
         else:
             inv_team = match.teams[0]
+            inv_market_id = match.poly_token_id_a
 
-        # ── Collect prices from all platforms for the opposite side ──
-        # Each candidate: (platform_name, market_id, ask_price, has_orderbook)
-        candidates = []
-
-        # Polymarket opposite token
-        poly_id = match.poly_token_id_b if team_side == "a" else match.poly_token_id_a
-        if poly_id:
-            poly_cached = self.prices["polymarket"].get(poly_id, {})
-            poly_ask = poly_cached.get("best_ask", 0)
-            if poly_ask > 0:
-                candidates.append(("polymarket", poly_id, poly_ask, True))
-
-        # Kalshi opposite ticker
-        kalshi_id = match.kalshi_ticker_b if team_side == "a" else match.kalshi_ticker_a
-        if kalshi_id:
-            kalshi_cached = self.prices["kalshi"].get(kalshi_id, {})
-            kalshi_ask = kalshi_cached.get("best_ask", 0)
-            if kalshi_ask > 0:
-                # Add Kalshi fee to make comparison fair
-                kalshi_effective = kalshi_ask + _kalshi_fee(kalshi_ask)
-                candidates.append(("kalshi", kalshi_id, kalshi_effective, True))
-
-        # Pinnacle vigged (implied) price — what you'd actually pay
-        # Use the raw implied prob WITH vig, not the de-vigged prob
-        if team_side == "a":
-            pin_implied = match.pinnacle_implied_b
-        else:
-            pin_implied = match.pinnacle_implied_a
-        if pin_implied > 0:
-            candidates.append(("pinnacle", "pinnacle", pin_implied, False))
-
-        if not candidates:
+        if not inv_market_id:
             inv.skipped_no_price += 1
-            logger.info("Inverted skip (no price on any platform): %s %s", inv_team, match.match_id[:25])
+            logger.info("Inverted skip (no opposite token): %s", inv_team)
             return
 
-        # Pick cheapest
-        candidates.sort(key=lambda c: c[2])
-        best_platform, best_market_id, best_ask, has_orderbook = candidates[0]
+        inv_cached = self.prices["polymarket"].get(inv_market_id, {})
+        inv_ask = inv_cached.get("best_ask", 0)
+        if inv_ask <= 0:
+            inv.skipped_no_price += 1
+            logger.info("Inverted skip (no price): %s polymarket", inv_team)
+            return
 
-        logger.debug(
-            "Inverted price comparison: %s — %s",
-            inv_team,
-            " | ".join(f"{c[0]}={c[2]*100:.0f}¢" for c in candidates),
-        )
-
-        # ── Fill simulation ──
-        inv_shares = int(size_usd / best_ask)
+        # ── Fill simulation on Polymarket opposite token ──
+        inv_shares = int(size_usd / inv_ask)
         if inv_shares < 1:
             inv.skipped_no_price += 1
             return
 
-        if has_orderbook:
-            # Real platform with order book — use fill simulation
-            inv_filled_shares, inv_fill_price = await simulate_value_fill_recheck(
-                best_platform, best_market_id, best_ask, inv_shares, FILL_RECHECK_DELAY,
-            )
-            if inv_filled_shares <= 0:
-                inv.skipped_fill_missed += 1
-                logger.info("Inverted skip (fill missed): %s %s", inv_team, best_platform)
-                return
-        else:
-            # Pinnacle — no order book, assume fill at implied price
-            # Pinnacle has deep liquidity on major sports, fill is realistic
-            inv_filled_shares = inv_shares
-            inv_fill_price = best_ask
+        inv_filled_shares, inv_fill_price = await simulate_value_fill_recheck(
+            "polymarket", inv_market_id, inv_ask, inv_shares, FILL_RECHECK_DELAY,
+        )
+        if inv_filled_shares <= 0:
+            inv.skipped_fill_missed += 1
+            logger.info("Inverted skip (fill missed): %s polymarket", inv_team)
+            return
 
         inv_cost = inv_filled_shares * inv_fill_price
         inv_trade_id = str(uuid.uuid4())
@@ -1339,8 +1368,8 @@ class ArbEngine:
             linked_trade_id=linked_trade_id,
             match_id=match.match_id,
             match_name=f"{match.teams[0]} vs {match.teams[1]}",
-            platform=best_platform,
-            market_id=best_market_id,
+            platform="polymarket",
+            market_id=inv_market_id,
             team=inv_team,
             price=inv_fill_price,
             size=inv_filled_shares,
@@ -1349,10 +1378,16 @@ class ArbEngine:
             pin_prob=1.0 - pin_prob,
         )
 
+        # Increment bucket counter
+        if is_high_edge:
+            inv.created_high_edge_bucket += 1
+        else:
+            inv.created_default_bucket += 1
+
         logger.info(
-            "🔄 INVERTED: %s %s@%s at %.0f¢ (cheapest of %s) — %d shares ($%.2f) [linked=%s]",
-            inv_team, best_platform, match.match_id[:25],
-            inv_fill_price * 100,
-            "/".join(f"{c[0]}:{c[2]*100:.0f}¢" for c in candidates),
+            "🔄 INVERTED [%s]: %s polymarket@%s at %.0f¢ (edge=%.1f%%) — %d shares ($%.2f) [linked=%s]",
+            "hi-edge" if is_high_edge else "default",
+            inv_team, match.match_id[:25],
+            inv_fill_price * 100, edge * 100,
             inv_filled_shares, inv_cost, linked_trade_id[:8],
         )

@@ -190,7 +190,7 @@ def _render_html(portfolio, inverted_portfolio=None) -> str:
     <div class="card yellow">
         <div class="card-label">Inverted Win Rate</div>
         <div class="card-value">{inv_wr}</div>
-        <div class="meta">{inv.win_count}W / {inv.loss_count}L | skip: {inv.skipped_not_complementary + inv.skipped_no_price + inv.skipped_fill_missed}</div>
+        <div class="meta">{inv.win_count}W / {inv.loss_count}L | {inv.created_default_bucket}+{inv.created_high_edge_bucket}hi created</div>
     </div>
 </div>"""
 
@@ -222,7 +222,7 @@ def _render_html(portfolio, inverted_portfolio=None) -> str:
     <td>{inv.trade_count}</td>
     <td>—</td></tr>
 </table>
-<p style="color:#8b949e;margin-top:8px;font-size:12px">Skips: not_complementary={inv.skipped_not_complementary} no_price={inv.skipped_no_price} fill_missed={inv.skipped_fill_missed}</p>
+<p style="color:#8b949e;margin-top:8px;font-size:12px">Created: {inv.created_default_bucket} default + {inv.created_high_edge_bucket} hi-edge | Settled: {inv.settled_ok} | Skips: plat={inv.skipped_platform} prob={inv.skipped_pin_prob} time={inv.skipped_time_to_start} edge_lo={inv.skipped_edge_low} edge_hi={inv.skipped_edge_high} comp={inv.skipped_not_complementary} price={inv.skipped_no_price} fill={inv.skipped_fill_missed}</p>
 </div>"""
 
         # Inverted positions table

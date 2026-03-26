@@ -303,9 +303,16 @@ def save_inverted(inv_portfolio) -> None:
         "loss_count": inv_portfolio.loss_count,
         "pnl_history": inv_portfolio.pnl_history,
         "created_at": inv_portfolio.created_at,
+        "created_default_bucket": inv_portfolio.created_default_bucket,
+        "created_high_edge_bucket": inv_portfolio.created_high_edge_bucket,
+        "settled_ok": inv_portfolio.settled_ok,
+        "skipped_platform": inv_portfolio.skipped_platform,
+        "skipped_pin_prob": inv_portfolio.skipped_pin_prob,
+        "skipped_time_to_start": inv_portfolio.skipped_time_to_start,
+        "skipped_edge_low": inv_portfolio.skipped_edge_low,
+        "skipped_edge_high": inv_portfolio.skipped_edge_high,
         "skipped_not_complementary": inv_portfolio.skipped_not_complementary,
         "skipped_no_price": inv_portfolio.skipped_no_price,
-        "skipped_price_too_high": inv_portfolio.skipped_price_too_high,
         "skipped_fill_missed": inv_portfolio.skipped_fill_missed,
         "positions": [
             {
@@ -351,9 +358,16 @@ def load_inverted(inv_portfolio) -> int:
         inv_portfolio.loss_count = data.get("loss_count", 0)
         inv_portfolio.pnl_history = data.get("pnl_history", [])
         inv_portfolio.created_at = data.get("created_at", inv_portfolio.created_at)
+        inv_portfolio.created_default_bucket = data.get("created_default_bucket", 0)
+        inv_portfolio.created_high_edge_bucket = data.get("created_high_edge_bucket", 0)
+        inv_portfolio.settled_ok = data.get("settled_ok", 0)
+        inv_portfolio.skipped_platform = data.get("skipped_platform", 0)
+        inv_portfolio.skipped_pin_prob = data.get("skipped_pin_prob", 0)
+        inv_portfolio.skipped_time_to_start = data.get("skipped_time_to_start", 0)
+        inv_portfolio.skipped_edge_low = data.get("skipped_edge_low", 0)
+        inv_portfolio.skipped_edge_high = data.get("skipped_edge_high", 0)
         inv_portfolio.skipped_not_complementary = data.get("skipped_not_complementary", 0)
         inv_portfolio.skipped_no_price = data.get("skipped_no_price", 0)
-        inv_portfolio.skipped_price_too_high = data.get("skipped_price_too_high", 0)
         inv_portfolio.skipped_fill_missed = data.get("skipped_fill_missed", 0)
 
         from live_bot.portfolio import InvertedPosition
