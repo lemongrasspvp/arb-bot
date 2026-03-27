@@ -27,6 +27,10 @@ from collector.config import (
 
 console = Console()
 
+# Ensure data directory exists
+from pathlib import Path
+Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
